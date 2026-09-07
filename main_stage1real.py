@@ -3,7 +3,7 @@ import argparse
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from tensorboardX import SummaryWriter
+import wandb
 
 from model_stage1real import ProSDDStage1
 from data_utils_stage1real import ProSDDStage1Dataset
@@ -147,18 +147,29 @@ if __name__ == "__main__":
     )
 
     os.makedirs(args.log_dir, exist_ok=True)
-    writer = SummaryWriter(args.log_dir)
+    with wandb.init(
+        project=os.environ.get("WANDB_PROJECT"),
+        entity=os.environ.get("WANDB_ENTITY"),
+        job_type="stage1",
+        config=vars(args),
+        dir=args.log_dir,
+    ) as run:
+        run.define_metric("epoch")
+        run.define_metric("*", step_metric="epoch")
 
-    for epoch in range(1, args.epochs + 1):
-        train_loss = train_epoch(train_loader, model, optimizer, device)
-        val_loss = validate(dev_loader, model, device)
+        for epoch in range(1, args.epochs + 1):
+            train_loss = train_epoch(train_loader, model, optimizer, device)
+            val_loss = validate(dev_loader, model, device)
 
-        writer.add_scalar("loss/train_contrastive", train_loss, epoch)
-        writer.add_scalar("loss/val_contrastive", val_loss, epoch)
+            run.log({
+                "epoch": epoch,
+                "loss/train_contrastive": train_loss,
+                "loss/val_contrastive": val_loss,
+            }, step=epoch)
 
-        print(f"Epoch {epoch:03d} | Train={train_loss:.6f} | Val={val_loss:.6f}", flush=True)
+            print(f"Epoch {epoch:03d} | Train={train_loss:.6f} | Val={val_loss:.6f}", flush=True)
 
-        torch.save(
-            model.state_dict(),
-            os.path.join(args.log_dir, f"model_epoch_{epoch}.pth")
-        )
+            torch.save(
+                model.state_dict(),
+                os.path.join(args.log_dir, f"model_epoch_{epoch}.pth")
+            )

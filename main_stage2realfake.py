@@ -3,7 +3,7 @@ import torch
 import argparse
 from tqdm import tqdm
 from torch.utils.data import DataLoader
-from tensorboardX import SummaryWriter
+import wandb
 
 from model_stage2realfake import ProSDDStage2
 from data_utils_stage2realfake import (
@@ -316,59 +316,68 @@ if __name__ == "__main__":
     print("Using class weights:", weight.tolist(), flush=True)
 
     os.makedirs(args.log_dir, exist_ok=True)
-    writer = SummaryWriter(args.log_dir)
+    with wandb.init(
+        project=os.environ.get("WANDB_PROJECT"),
+        entity=os.environ.get("WANDB_ENTITY"),
+        job_type="stage2",
+        config=vars(args),
+        dir=args.log_dir,
+    ) as run:
+        run.define_metric("epoch")
+        run.define_metric("*", step_metric="epoch")
 
-    for epoch in range(1, args.epochs + 1):
-        
-        if epoch <= 4:
-            beta_eff = 0.2
-        else:
-            beta_eff = 0.05  
+        for epoch in range(1, args.epochs + 1):
 
-        train_loss, train_ssl, train_cls, train_spk_cos, train_pros_cos = train_epoch(
-            train_loader,
-            model,
-            optimizer,
-            device,
-            epoch,
-            args.freeze_epochs,
-            args.alpha,
-            beta_eff,         
-            criterion_cls,
-        )
+            if epoch <= 4:
+                beta_eff = 0.2
+            else:
+                beta_eff = 0.05
 
-        val_loss, val_ssl, val_cls, val_acc, val_acc_bona, val_acc_spoof, val_bal, val_spk_cos, val_pros_cos = validate(
-            dev_loader,
-            model,
-            device,
-            args.alpha,
-            beta_eff,          
-            criterion_cls,
-        )
+            train_loss, train_ssl, train_cls, train_spk_cos, train_pros_cos = train_epoch(
+                train_loader,
+                model,
+                optimizer,
+                device,
+                epoch,
+                args.freeze_epochs,
+                args.alpha,
+                beta_eff,
+                criterion_cls,
+            )
 
-        writer.add_scalar("loss/train_total", train_loss, epoch)
-        writer.add_scalar("loss/train_ssl", train_ssl, epoch)
-        writer.add_scalar("loss/train_cls", train_cls, epoch)
-        writer.add_scalar("cos/train_spk", train_spk_cos, epoch)
-        writer.add_scalar("cos/train_pros", train_pros_cos, epoch)
+            val_loss, val_ssl, val_cls, val_acc, val_acc_bona, val_acc_spoof, val_bal, val_spk_cos, val_pros_cos = validate(
+                dev_loader,
+                model,
+                device,
+                args.alpha,
+                beta_eff,
+                criterion_cls,
+            )
 
-        writer.add_scalar("loss/val_total", val_loss, epoch)
-        writer.add_scalar("loss/val_ssl", val_ssl, epoch)
-        writer.add_scalar("loss/val_cls", val_cls, epoch)
-        writer.add_scalar("cos/val_spk", val_spk_cos, epoch)
-        writer.add_scalar("cos/val_pros", val_pros_cos, epoch)
+            run.log({
+                "epoch": epoch,
+                "loss/train_total": train_loss,
+                "loss/train_ssl": train_ssl,
+                "loss/train_cls": train_cls,
+                "cos/train_spk": train_spk_cos,
+                "cos/train_pros": train_pros_cos,
+                "loss/val_total": val_loss,
+                "loss/val_ssl": val_ssl,
+                "loss/val_cls": val_cls,
+                "cos/val_spk": val_spk_cos,
+                "cos/val_pros": val_pros_cos,
+                "acc/val": val_acc,
+                "acc/val_bonafide": val_acc_bona,
+                "acc/val_spoof": val_acc_spoof,
+                "acc/val_balanced": val_bal,
+            }, step=epoch)
 
-        writer.add_scalar("acc/val", val_acc, epoch)
-        writer.add_scalar("acc/val_bonafide", val_acc_bona, epoch)
-        writer.add_scalar("acc/val_spoof", val_acc_spoof, epoch)
-        writer.add_scalar("acc/val_balanced", val_bal, epoch)
-
-        print(
-            f"Epoch {epoch:03d} | beta={beta_eff:.3f} | "
-            f"Train L={train_loss:.4f} (SSL={train_ssl:.4f}, CLS={train_cls:.4f}) | "
-            f"Val L={val_loss:.4f} (SSL={val_ssl:.4f}, CLS={val_cls:.4f}) | "
-            f"Acc={val_acc:.2%} | Bona={val_acc_bona:.2%} | Spoof={val_acc_spoof:.2%} | Bal={val_bal:.2%} | "
-            f"Cos(spk/pros) train={train_spk_cos:.3f}/{train_pros_cos:.3f} val={val_spk_cos:.3f}/{val_pros_cos:.3f}",
-            flush=True,
-        )
-        torch.save(model.state_dict(), os.path.join(args.log_dir, f"model_epoch_{epoch}.pth"))
+            print(
+                f"Epoch {epoch:03d} | beta={beta_eff:.3f} | "
+                f"Train L={train_loss:.4f} (SSL={train_ssl:.4f}, CLS={train_cls:.4f}) | "
+                f"Val L={val_loss:.4f} (SSL={val_ssl:.4f}, CLS={val_cls:.4f}) | "
+                f"Acc={val_acc:.2%} | Bona={val_acc_bona:.2%} | Spoof={val_acc_spoof:.2%} | Bal={val_bal:.2%} | "
+                f"Cos(spk/pros) train={train_spk_cos:.3f}/{train_pros_cos:.3f} val={val_spk_cos:.3f}/{val_pros_cos:.3f}",
+                flush=True,
+            )
+            torch.save(model.state_dict(), os.path.join(args.log_dir, f"model_epoch_{epoch}.pth"))
