@@ -1,26 +1,23 @@
 """Layer-wise model placement without splitting the contrastive batch."""
 
+import os
+
 import torch
 
 
-def add_gpu_arguments(parser):
-    parser.add_argument(
-        "--gpu_ids", type=int, nargs="+", default=None,
-        help="Visible CUDA device IDs for model parallelism (e.g. 0 1). "
-             "Omit to retain the original single-device behavior.",
-    )
+def resolve_devices(*, require_cuda=False):
+    """Default to one GPU; use all visible GPUs when explicitly configured.
 
-
-def resolve_devices(gpu_ids=None, *, require_cuda=False):
-    if gpu_ids is None:
-        return [torch.device("cuda" if require_cuda or torch.cuda.is_available() else "cpu")]
-    if not gpu_ids or len(set(gpu_ids)) != len(gpu_ids):
-        raise ValueError("gpu_ids must contain distinct CUDA device IDs")
-    count = torch.cuda.device_count()
-    if any(i < 0 or i >= count for i in gpu_ids):
-        raise ValueError(f"gpu_ids must be in [0, {count}); received {gpu_ids}")
-    torch.cuda.set_device(gpu_ids[0])
-    return [torch.device("cuda", i) for i in gpu_ids]
+    CUDA interprets CUDA_VISIBLE_DEVICES, including UUIDs and device ordering.
+    Use its logical device count rather than parsing physical IDs ourselves.
+    """
+    if not torch.cuda.is_available():
+        if require_cuda:
+            raise RuntimeError("Evaluation requires an available CUDA GPU")
+        return [torch.device("cpu")]
+    count = torch.cuda.device_count() if "CUDA_VISIBLE_DEVICES" in os.environ else 1
+    torch.cuda.set_device(0)
+    return [torch.device("cuda", i) for i in range(count)]
 
 
 def _move(value, device):

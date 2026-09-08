@@ -146,27 +146,35 @@ W&B 的初始化、環境變數與同步方式可參考
 
 ### 多顯卡運算（Stage 1／Stage 2／評估）
 
-在原本命令加上 `--gpu_ids 0 1` 即可使用兩張可見的 CUDA 顯卡；
-也可指定更多張，例如 `--gpu_ids 0 1 2 3`。三個入口
-`main_stage1real.py`、`main_stage2realfake.py`、`main_eval.py` 都支援此選項。
-不指定時保留原本的單裝置行為。使用一般 `python` 單一程序啟動，
-不需使用 `torchrun`。
+三個入口 `main_stage1real.py`、`main_stage2realfake.py`、`main_eval.py`
+統一使用 `CUDA_VISIBLE_DEVICES` 指定顯卡，不需要額外的命令列 GPU 參數。
+請在啟動 Python 程序前設定環境變數：
+
+- 未設定：預設只使用第一張可用 GPU。
+- `CUDA_VISIBLE_DEVICES=2`：只使用實體 GPU 2。
+- `CUDA_VISIBLE_DEVICES=2,3`：使用實體 GPU 2、3，啟用模型平行。
+- `CUDA_VISIBLE_DEVICES=0,1,2,3`：使用四張 GPU。
+- 沒有可用 CUDA GPU（包含設為空字串或 `-1`）：訓練使用 CPU；評估需要 CUDA，會回報錯誤。
+
+使用一般 `python` 單一程序啟動，不需使用 `torchrun`。
+如果執行環境已預先設定 `CUDA_VISIBLE_DEVICES`，程式會使用其中所有可見 GPU；
+只想用單卡時，請在啟動命令明確指定一張卡。
 
 例如，Stage 1 的完整命令範本（請替換資料路徑）：
 
 ```bash
-uv run --locked python main_stage1real.py \
+CUDA_VISIBLE_DEVICES=2,3 uv run --locked python main_stage1real.py \
   --train_prosody_txt /data/train_prosody.txt \
   --dev_prosody_txt /data/dev_prosody.txt \
   --train_spkmean_txt /data/train_spkmean.txt \
   --dev_spkmean_txt /data/dev_spkmean.txt \
   --wav_dir_train /data/train_audio \
   --wav_dir_dev /data/dev_audio \
-  --batch_size 64 --gpu_ids 0 1
+  --batch_size 64
 ```
 
-GPU 編號以 `CUDA_VISIBLE_DEVICES` 過濾後的可見編號為準。
-例如設定 `CUDA_VISIBLE_DEVICES=2,3` 後，仍使用 `--gpu_ids 0 1`。
+CUDA 會將選定的 GPU 重新編號為程序內的 `cuda:0`、`cuda:1` 等。
+例如 `CUDA_VISIBLE_DEVICES=2,3` 對應實體 GPU 2、3，程式顯示為 `cuda:0`、`cuda:1`。
 第一個指定的 GPU 為主裝置，負責特徵擷取、投影、遮罩、損失與分類頭；
 Transformer 層則依序平均分配到指定的 GPU。每層輸出會回到主裝置，
 讓原本 encoder 的 LayerDrop 與最終 LayerNorm 流程保持相容。

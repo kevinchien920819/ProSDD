@@ -1,6 +1,6 @@
 import os
 import argparse
-from multi_gpu import add_gpu_arguments, resolve_devices, place_model
+from multi_gpu import resolve_devices, place_model
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -48,7 +48,6 @@ def validate(loader, model, device):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    add_gpu_arguments(parser)
 
     # -------- data --------
     parser.add_argument("--train_prosody_txt", type=str, required=True)
@@ -79,7 +78,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     set_random_seed(args.seed)
 
-    devices = resolve_devices(args.gpu_ids)
+    devices = resolve_devices()
     device = devices[0]
     print(f"Model devices: {devices}", flush=True)
     print(f"Using device: {device}", flush=True)

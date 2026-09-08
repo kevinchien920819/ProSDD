@@ -1,4 +1,5 @@
 import copy
+import os
 import unittest
 from unittest.mock import patch
 
@@ -111,13 +112,27 @@ class PlacementTests(unittest.TestCase):
         self.assertIs(place_model(model, [torch.device("cpu")]), model)
         self.assertFalse(any(layer._forward_hooks for layer in model.ssl.encoder.layers))
 
-    def test_device_validation(self):
-        with patch("torch.cuda.device_count", return_value=2):
-            for ids in ([], [0, 0], [-1], [2]):
-                with self.subTest(ids=ids), self.assertRaises(ValueError):
-                    resolve_devices(ids)
-        with patch("torch.cuda.is_available", return_value=False):
-            self.assertEqual(resolve_devices(), [torch.device("cpu")])
+    def test_device_selection_from_environment(self):
+        cases = ((None, 4, 1), ("2", 1, 1), ("2,3", 2, 2),
+                 ("3,1,2,0", 4, 4), ("GPU-example-uuid", 1, 1))
+        for visible, available, expected in cases:
+            env = {} if visible is None else {"CUDA_VISIBLE_DEVICES": visible}
+            with self.subTest(visible=visible), patch.dict(os.environ, env, clear=True), \
+                    patch("torch.cuda.is_available", return_value=True), \
+                    patch("torch.cuda.device_count", return_value=available), \
+                    patch("torch.cuda.set_device") as select:
+                self.assertEqual(resolve_devices(),
+                                 [torch.device("cuda", i) for i in range(expected)])
+                select.assert_called_once_with(0)
+
+    def test_no_cuda(self):
+        for visible in (None, "", "-1"):
+            env = {} if visible is None else {"CUDA_VISIBLE_DEVICES": visible}
+            with self.subTest(visible=visible), patch.dict(os.environ, env, clear=True), \
+                    patch("torch.cuda.is_available", return_value=False):
+                self.assertEqual(resolve_devices(), [torch.device("cpu")])
+                with self.assertRaisesRegex(RuntimeError, "requires an available CUDA GPU"):
+                    resolve_devices(require_cuda=True)
 
     @unittest.skipUnless(torch.cuda.device_count() >= 2, "requires two CUDA GPUs")
     def test_two_gpu_forward_backward_update_and_checkpoint(self):

@@ -1,6 +1,6 @@
 import os
 import argparse
-from multi_gpu import add_gpu_arguments, resolve_devices, place_model
+from multi_gpu import resolve_devices, place_model
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -42,7 +42,7 @@ def inference_forward(model, wav):
     return logits
 
 def main(args):
-    devices = resolve_devices(args.gpu_ids, require_cuda=True)
+    devices = resolve_devices(require_cuda=True)
     device = devices[0]
     print(f"Model devices: {devices}", flush=True)
     dataset = ProSDDEvalDataset(args.list_path, args.wav_dir)
@@ -78,7 +78,6 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    add_gpu_arguments(parser)
     parser.add_argument("--list_path", required=True)
     parser.add_argument("--wav_dir", required=True)
     parser.add_argument("--model_path", required=True)
