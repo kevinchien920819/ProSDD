@@ -106,7 +106,7 @@ def main(protocol_txt: str, audio_dir: str, out_txt: str, utt_col: int = 1, ext:
             if len(parts) <= utt_col:
                 continue
             utt = parts[utt_col]
-            audio_path = os.path.join(audio_dir, utt)
+            audio_path = os.path.join(audio_dir, utt if utt.endswith(ext) else utt + ext)
             if not os.path.exists(audio_path):
                 print(f"[WARN] Skip {utt}: Not found.", flush=True)
                 continue

@@ -14,7 +14,7 @@ from data_utils_stage2realfake import (
     SAMPLING_RATE,
     TARGET_SAMPLES,
 )
-from core_scripts.startup_config import set_random_seed
+from utils import set_random_seed
 
 
 def train_epoch(loader, model, optimizer, device, epoch, freeze_epochs, alpha, beta, criterion_cls):
