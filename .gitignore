@@ -1,3 +1,7 @@
 .venv/
 report/* 
 wandb/
+output/
+__pycache__/
+dataset
+/prosody_txt/
