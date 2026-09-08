@@ -1,5 +1,6 @@
 import os
 import argparse
+from multi_gpu import add_gpu_arguments, resolve_devices, place_model
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -41,13 +42,15 @@ def inference_forward(model, wav):
     return logits
 
 def main(args):
-    device = torch.device("cuda")
+    devices = resolve_devices(args.gpu_ids, require_cuda=True)
+    device = devices[0]
+    print(f"Model devices: {devices}", flush=True)
     dataset = ProSDDEvalDataset(args.list_path, args.wav_dir)
     loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=4, pin_memory=True)
     model = ProSDDStage2(
         classifier_pool=args.classifier_pool,
         T_target=200
-    ).to(device)
+    )
     print(f"Loading: {args.model_path}")
     state = torch.load(args.model_path, map_location="cpu")
     if "state_dict" in state: state = state["state_dict"]
@@ -55,6 +58,7 @@ def main(args):
     for k, v in state.items():
         new_state[k.replace("module.", "")] = v
     model.load_state_dict(new_state, strict=False)
+    place_model(model, devices)
     model.eval()
 
     # Output File
@@ -74,6 +78,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    add_gpu_arguments(parser)
     parser.add_argument("--list_path", required=True)
     parser.add_argument("--wav_dir", required=True)
     parser.add_argument("--model_path", required=True)

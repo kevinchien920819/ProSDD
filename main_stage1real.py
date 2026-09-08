@@ -1,5 +1,6 @@
 import os
 import argparse
+from multi_gpu import add_gpu_arguments, resolve_devices, place_model
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -47,6 +48,7 @@ def validate(loader, model, device):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    add_gpu_arguments(parser)
 
     # -------- data --------
     parser.add_argument("--train_prosody_txt", type=str, required=True)
@@ -77,7 +79,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     set_random_seed(args.seed)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    devices = resolve_devices(args.gpu_ids)
+    device = devices[0]
+    print(f"Model devices: {devices}", flush=True)
     print(f"Using device: {device}", flush=True)
 
     # datasets
@@ -119,7 +123,8 @@ if __name__ == "__main__":
         mask_prob=args.mask_prob,
         mask_span_len=args.mask_span_len,
         tau=args.tau,
-    ).to(device)
+    )
+    place_model(model, devices)
 
     # collect parameters for separate LRs
     ssl_param_names = []

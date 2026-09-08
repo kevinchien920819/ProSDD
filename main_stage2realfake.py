@@ -1,6 +1,7 @@
 import os
 import torch
 import argparse
+from multi_gpu import add_gpu_arguments, resolve_devices, place_model
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 import wandb
@@ -144,6 +145,7 @@ def validate(loader, model, device, alpha, beta, criterion_cls):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    add_gpu_arguments(parser)
 
     # -------- data --------
     parser.add_argument("--train_list", type=str, required=True)
@@ -208,7 +210,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     set_random_seed(args.seed)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    devices = resolve_devices(args.gpu_ids)
+    device = devices[0]
+    print(f"Model devices: {devices}", flush=True)
     print(f"Using device: {device}", flush=True)
     print(f"Audio: sr={SAMPLING_RATE}, samples={TARGET_SAMPLES}", flush=True)
 
@@ -282,7 +286,8 @@ if __name__ == "__main__":
         num_spk_neg=args.num_spk_neg,
         T_target=args.T_target,
         classifier_pool=args.classifier_pool,
-    ).to(device)
+    )
+    place_model(model, devices)
 
     # param groups
     ssl_backbone_params, ssl_head_params, cls_params = [], [], []

@@ -143,3 +143,56 @@ W&B 的初始化、環境變數與同步方式可參考
 [Python SDK 文件](https://docs.wandb.ai/models/ref/python/functions/init)、
 [環境變數文件](https://docs.wandb.ai/models/track/environment-variables)與
 [sync 指令文件](https://docs.wandb.ai/models/ref/cli/wandb-sync)。
+
+### 多顯卡運算（Stage 1／Stage 2／評估）
+
+在原本命令加上 `--gpu_ids 0 1` 即可使用兩張可見的 CUDA 顯卡；
+也可指定更多張，例如 `--gpu_ids 0 1 2 3`。三個入口
+`main_stage1real.py`、`main_stage2realfake.py`、`main_eval.py` 都支援此選項。
+不指定時保留原本的單裝置行為。使用一般 `python` 單一程序啟動，
+不需使用 `torchrun`。
+
+例如，Stage 1 的完整命令範本（請替換資料路徑）：
+
+```bash
+uv run --locked python main_stage1real.py \
+  --train_prosody_txt /data/train_prosody.txt \
+  --dev_prosody_txt /data/dev_prosody.txt \
+  --train_spkmean_txt /data/train_spkmean.txt \
+  --dev_spkmean_txt /data/dev_spkmean.txt \
+  --wav_dir_train /data/train_audio \
+  --wav_dir_dev /data/dev_audio \
+  --batch_size 64 --gpu_ids 0 1
+```
+
+GPU 編號以 `CUDA_VISIBLE_DEVICES` 過濾後的可見編號為準。
+例如設定 `CUDA_VISIBLE_DEVICES=2,3` 後，仍使用 `--gpu_ids 0 1`。
+第一個指定的 GPU 為主裝置，負責特徵擷取、投影、遮罩、損失與分類頭；
+Transformer 層則依序平均分配到指定的 GPU。每層輸出會回到主裝置，
+讓原本 encoder 的 LayerDrop 與最終 LayerNorm 流程保持相容。
+
+此實作採用模型平行，完整 batch 會依序通過各層。
+`--batch_size` 仍是每次 optimizer 更新的完整 batch 大小，不需乘上顯卡數。
+跨說話者負樣本候選集合、遮罩與負樣本抽樣規則、損失權重、
+學習率分組、凍結排程、資料順序、W&B 紀錄及 checkpoint 欄位名稱均維持原有設計。
+舊 checkpoint 可以直接用於多卡評估，多卡訓練輸出的 checkpoint
+也可用於原本單卡流程。
+
+這種配置分散 Transformer 參數、梯度、optimizer 狀態與部分 activation
+的記憶體需求，但各層仍依序運算，且有跨卡傳輸成本，**不保證加速或平均分配顯存**。
+主裝置仍需容納完整 batch 的特徵與對比損失，增加顯卡不保證能消除所有 OOM。
+訓練中的 dropout 使用各裝置的隨機數產生器，加上浮點運算差異，
+即使 seed 相同，多卡與單卡也不保證逐位元相同或產生完全相同的訓練軌跡；
+這裡保留的是模型與訓練演算法的邏輯。
+韻律特徵擷取腳本 `extract_Prosody.py` 不適用此參數。
+
+驗證方式（使用小型隨機初始化 Wav2Vec2，不下載預訓練權重）：
+
+```bash
+uv run --locked python -m unittest discover -s tests -v
+```
+
+測試涵蓋兩個訓練階段、兩種分類 pooling、輸出與梯度、一次 AdamW 更新、
+LayerDrop、分類頭凍結、評估入口及 checkpoint 嚴格載入。
+CPU 測試驗證裝置轉移 hook 不改變計算；實際跨 GPU 的輸出、反向傳播與更新測試
+需要至少兩張可用 CUDA 顯卡，否則會標示為 skipped。
