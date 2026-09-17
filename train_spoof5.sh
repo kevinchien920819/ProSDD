@@ -8,18 +8,18 @@ cd "$(dirname "$0")"
 mkdir -p prosody_txt output/logs_stage1contrastived output/logs_stage2realfake_batch_8
 
 ########## Step 0: extract prosody ##########
-# ASVspoof2019 LA (protocol 第 1 欄是 utt ID)
-# uv run --locked python extract_Prosody.py \
-#   --protocol_txt dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.train.trn.txt \
-#   --audio_dir    dataset/ASVspoof2019/ASVspoof2019_LA_train/flac \
-#   --out_txt      prosody_txt/asvspoof2019_train_prosody.txt \
-#   --utt_col 1 --ext .flac --layer 7
+# ASVspoof5（utt ID 在第 2 欄；--utt_col 使用從 0 開始的索引）
+uv run --locked python extract_Prosody.py \
+  --protocol_txt dataset/ASVspoof5/ASVspoof5.train.tsv \
+  --audio_dir    dataset/ASVspoof5/flac_T \
+  --out_txt      prosody_txt/asvspoof5_train_prosody.txt \
+  --utt_col 1 --ext .flac --layer 7
 
-# uv run --locked python extract_Prosody.py \
-#   --protocol_txt dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.dev.trl.txt \
-#   --audio_dir    dataset/ASVspoof2019/ASVspoof2019_LA_dev/flac \
-#   --out_txt      prosody_txt/asvspoof2019_dev_prosody.txt \
-#   --utt_col 1 --ext .flac --layer 7
+uv run --locked python extract_Prosody.py \
+  --protocol_txt dataset/ASVspoof5/ASVspoof5.dev.track_1.tsv \
+  --audio_dir    dataset/ASVspoof5/flac_D \
+  --out_txt      prosody_txt/asvspoof5_dev_prosody.txt \
+  --utt_col 1 --ext .flac --layer 7
 
 # # LibriSpeech (清單每行只有 utt ID；扁平 symlink 目錄由 protocols/ 與 dataset/LibriSpeech_flat/ 提供)
 # uv run --locked python extract_Prosody.py \
@@ -54,19 +54,20 @@ export WANDB_NAME="${WANDB_NAME:-stage1-librispeech}"
 #   --seed 1234 \
 #   --log_dir output/logs_stage1contrastived
 
-########## Step 2: Stage 2 (ASVspoof2019 LA train / dev) ##########
-export WANDB_NAME="${WANDB_STAGE2_NAME:-stage2-asvspoof2019}"
+########## Step 2: Stage 2 (ASVspoof5 train / dev Track 1) ##########
+export WANDB_NAME="${WANDB_STAGE2_NAME:-stage2-asvspoof5}"
 
 # 接續上方 Stage 1 第 50 個 epoch 的 checkpoint。
+# `asvspoof2024_*_spkmean.txt` 是 ASVspoof5 train/dev 的 speaker embedding 快取。
 uv run --locked python main_stage2realfake.py \
-  --train_list dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.train.trn.txt \
-  --dev_list   dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.dev.trl.txt \
-  --wav_dir_train dataset/ASVspoof2019/ASVspoof2019_LA_train/flac \
-  --wav_dir_dev   dataset/ASVspoof2019/ASVspoof2019_LA_dev/flac \
-  --spkmean_txt_train spk_text/asvspoof2019_train_spkmean.txt \
-  --spkmean_txt_dev   spk_text/asvspoof2019_dev_spkmean.txt \
-  --prosody_txt_train prosody_txt/asvspoof2019_train_prosody.txt \
-  --prosody_txt_dev   prosody_txt/asvspoof2019_dev_prosody.txt \
+  --train_list dataset/ASVspoof5/ASVspoof5.train.tsv \
+  --dev_list   dataset/ASVspoof5/ASVspoof5.dev.track_1.tsv \
+  --wav_dir_train dataset/ASVspoof5/flac_T \
+  --wav_dir_dev   dataset/ASVspoof5/flac_D \
+  --spkmean_txt_train spk_text/asvspoof2024_train_spkmean.txt \
+  --spkmean_txt_dev   spk_text/asvspoof2024_dev_spkmean.txt \
+  --prosody_txt_train prosody_txt/asvspoof5_train_prosody.txt \
+  --prosody_txt_dev   prosody_txt/asvspoof5_dev_prosody.txt \
   --stage1_ckpt output/logs_stage1contrastived/model_epoch_50.pth \
   --audio_ext .flac \
   --epochs 50 --batch_size 8 --num_workers 8 \
@@ -75,20 +76,11 @@ uv run --locked python main_stage2realfake.py \
   --seed 1234 \
   --log_dir output/logs_stage2realfake_batch_8
 
-########## Step 3: Evaluation (ASVspoof2019 LA / ASVspoof5 Track 1 / ASVspoof2021 LA) ##########
+########## Step 3: Evaluation (ASVspoof5 Track 1) ##########
 # 使用 Stage 2 第 50 個 epoch 的 checkpoint，輸出逐音檔分數與 CM 指標。
 eval_ckpt="output/logs_stage2realfake_batch_8/model_epoch_50.pth"
 eval_score_dir="output/eval_stage2_epoch50"
 mkdir -p "$eval_score_dir"
-
-uv run --locked python main_eval.py \
-  --list_path dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.eval.trl.txt \
-  --wav_dir dataset/ASVspoof2019/ASVspoof2019_LA_eval/flac \
-  --model_path "$eval_ckpt" \
-  --save_scores_to "$eval_score_dir/asvspoof2019_la_eval.txt" \
-  --save_metrics_to "$eval_score_dir/asvspoof2019_la_eval.metrics.json" \
-  --batch_size 16 \
-  --classifier_pool mean
 
 uv run --locked python main_eval.py \
   --list_path dataset/ASVspoof5/ASVspoof5.eval.track_1.tsv \

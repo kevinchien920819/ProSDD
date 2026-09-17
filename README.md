@@ -72,6 +72,34 @@ These baselines are provided to help the community efficiently use the ASVspoof 
 ### Evaluation Scores
 We also release the evaluation scores for all provided checkpoints.
 
+### 計算 EER、Cllr、minDCF、actDCF
+
+`evaluation_metric/` 已從 `rhythm-transformer/src/evaluation_metric` 移入，
+提供 CM 指標計算。既有分數檔可以直接評估，不需要重新推論或使用 GPU：
+
+```bash
+uv run --locked python -m evaluation_metric \
+  --score_path output/eval_stage2_epoch50/asvspoof2019_la_eval.txt \
+  --protocol_path dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.eval.trl.txt \
+  --save_metrics_to output/eval_stage2_epoch50/asvspoof2019_la_eval.metrics.json
+```
+
+若要在推論後直接計算，在 `main_eval.py` 命令加上
+`--save_metrics_to /path/to/metrics.json`。標籤預設取自 `--list_path`；
+如果音檔清單與標籤分開保存，另外指定 `--metrics_protocol /path/to/keys.tsv`。
+`train.sh` 的兩個 evaluation 步驟都已啟用此選項。
+
+支援 ASVspoof 2019 五欄 protocol、ASVspoof5 Track 1 十欄 protocol，
+以及兩欄 ID／標籤檔和具名 TSV。分數依 utterance ID 對齊，缺漏或重複 ID
+會回報錯誤。JSON 包含四項指標、樣本數及 cost model；`eer` 是 0–1 比例，
+`eer_percent` 是百分比，`cllr` 單位為 bits。
+
+沿用來源的 CM cost model：`Pspoof=0.05`、`Cmiss=1`、`Cfa=10`。
+`main_eval.py` 的分數仍是 `logits[:, 1]`；Cllr／actDCF 直接以這組分數作為
+LLR 輸入計算，未做校正。原始 a-DCF／t-DCF／t-EER 函式也已移入，但需要
+額外 ASV／SASV 資料，目前 CM 入口不會計算這些指標。詳細格式、來源與
+分數語意見 [evaluation_metric/README.md](evaluation_metric/README.md)。
+
 ### Prosody Extraction Environment
 
 Frame-level prosody embeddings are extracted using the [Masked Prosody Model](https://huggingface.co/cdminix/masked_prosody_model).
@@ -93,6 +121,93 @@ The repository provides separate scripts for each stage of the ProSDD pipeline:
 - `main_stage1real.py`: Train Stage 1 using bonafide speech
 - `main_stage2realfake.py`: Train Stage 2 using bonafide and spoofed speech
 - `main_eval.py`: Evaluate a trained ProSDD checkpoint
+
+### Prosody 維度（128／256）
+
+Stage 1 與 Stage 2 預設從訓練 prosody 檔案自動判定維度，支援 128 與 256。
+也可以在原本的訓練命令加上 `--prosody_dim 128` 或 `--prosody_dim 256`
+明確指定；若與資料不符，會在載入時回報錯誤並指出檔案與 utterance。
+同一份檔案內的所有 utterance，以及同次訓練的 train／dev，必須使用相同維度。
+
+Prosody targets 使用檔案位置索引：每次啟動會串流掃描文字檔，檢查各筆
+frame 數與維度，記憶體只保留 utterance ID、位置與形狀；需要組成 batch 時
+才解析對應的 float32 tensor。原本的 `prosody_txt` 可直接使用，不需重新抽取。
+ASVspoof5 的 train／dev targets 若全部載入約需 61.7 GiB RAM，索引方式可避免
+在 Dataset 初始化時耗盡記憶體。每次啟動的掃描仍需要磁碟讀取時間，
+程式會顯示索引進度。各個 DataLoader worker 分別開檔讀取；訓練期間請保持
+來源檔案不變，若檔案被覆寫，程式會要求重新建立 Dataset。
+
+`train_rhythm.sh` 已啟用 `--skip_bad_samples`：單筆 duration 缺少或損壞、
+speaker／prosody 特徵缺少或形狀錯誤、音檔讀取失敗、中央 4 秒內沒有完整音節、
+特徵含非有限值，或音訊太短而無法產生有效 CNN frame 時，會自動略過並記錄原因。
+剩餘樣本照常組成 batch；整批都不可用時繼續下一批。沒有啟用此參數時維持嚴格檢查。
+OOM、模型運算失敗、整份 CSV 欄位錯誤或訓練期間 prosody 檔案被覆寫，仍會回報錯誤。
+
+`config.json` 的 `dataset_counts` 記錄初始化篩選後的筆數；`duration_filter.json`
+保存初始化時略過的 ID 與理由。`skipped_samples.jsonl` 記錄所有略過項目的
+`split`、`epoch`、`utt_id`、`reason`（`epoch=0` 表示初始化篩選）。
+`metrics.jsonl` 的 `train/samples`、`val/samples` 是該 epoch 實際處理的筆數，
+`train/skipped_samples`、`val/skipped_samples` 則是讀取及組 batch 時略過的筆數。
+loss、accuracy 與 EER 以成功載入的樣本計算；有效評估集合可能小於原始 protocol。
+整個 epoch 無有效樣本，或 dev 剩下單一類別而無法計算 EER 時，仍會停止並回報原因。
+
+兩階段模型的 `pros_ln` 與 `final_proj` 都會使用判定後的維度：
+speaker 固定為 192 維，因此 prosody 為 128／256 維時，投影輸出分別為 320／448 維。
+啟動時會印出 `Prosody dim: ...`，W&B config 也會記錄實際的 `prosody_dim`。
+直接在 Python 建立模型時，請傳入 `prosody_dim=dataset.prosody_dim`；
+模型建構子的預設值仍為 128。
+
+Stage 2 使用的 Stage 1 checkpoint 必須與 Stage 2 資料維度一致。
+`main_eval.py` 會從 checkpoint 權重判定維度，評估時不需要另外指定。
+
+### Rhythm Stage 2：完整語音訓練
+
+`main_stage2realfake_rhythm.py` 預設保留整段音訊與全部音節，不再裁成四秒。
+XLS-R 的 frame 數與音節數皆可變；同一個 batch 只在右側補零，attention、
+SSL anchors 與負樣本取樣都排除 padding。音節 duration、deviation、相鄰差異
+與 nPVI 使用完整音檔的音節重新計算，cross-attention 融合方式維持不變。
+
+完整語音必須搭配重新抽取的 prosody targets，不能沿用原本四秒／200-frame cache。
+以下以 train 為例；dev 使用相同 teacher 與設定另行抽取：
+
+```bash
+uv run --locked python extract_full_prosody.py \
+  --protocol_txt dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.train.trn.txt \
+  --audio_dir dataset/ASVspoof2019/ASVspoof2019_LA_train/flac \
+  --out_txt prosody_full_txt/asvspoof2019_train_prosody.txt \
+  --utt_col 1 --ext .flac --layer 7
+```
+
+VAD teacher 加上 `--teacher_kind vad --teacher_checkpoint <實際 checkpoint 目錄>`；
+該目錄必須包含 `model_config.yml` 與 `pytorch_model.bin`，並與 Stage 1 的 teacher 選擇相符。
+抽取工具沿用 teacher 原生的六秒窗口，逐段處理完整音檔（含最後不足六秒的尾段），
+再以實際時間戳插值到 XLS-R CNN receptive field 的中心。Teacher 的每段上下文有限，
+但沒有丟棄任何音訊區段；Stage 2 的 XLS-R 與融合模型仍一次接收完整語音。
+
+工具會同時寫入 `<prosody.txt>.meta.json`，記錄完整音長、CNN frame 幾何與 teacher 設定。
+訓練會驗證此 metadata、target frame 數及實際音長；缺少 metadata 的舊 cache 會直接報錯，
+不會自動拉長四秒 target。`--skip_bad_samples` 也不會隱藏音長／target 對應錯誤。
+
+`train_rhythm.sh` 的 Step 0 以註解列出完整語音 train/dev targets 的抽取指令，
+需手動單獨執行以準備 `prosody_full_txt/`。腳本不會自動抽取。
+準備完成後，執行 `bash train_rhythm.sh` 進行訓練與評估，輸出至
+`output/logs_stage2realfake_rhythm_syllable_full/` 與 `output/eval_stage2_epoch50_rhythm_syllable_full/`；
+`EVAL_ONLY=1` 可只評估，亦可透過原有的 `EVAL_CKPT`／`EVAL_SCORE_DIR` 指定輸入輸出。
+VAD 版本使用 `train_rhythm_vad.sh`，可用 `VAD_TEACHER_CHECKPOINT` 指定 teacher checkpoint。
+
+- 訓練預設 `--batch_size 32 --num_workers 8`，對齊原先 baseline 的實際 Stage 2 run。
+  訓練隨機打亂，dev 不打亂；最後一批保留，略過無效資料時實際筆數可能較少。
+- 訓練 `--max_batch_samples` 預設 `0`，停用音長預算，維持固定 batch 大小。
+  完整語音比四秒裁切需要更多顯存；不會自動縮小 batch 或裁切語音。
+  明確指定正值才啟用依音長分組的可變 batch，例如 `640000` 是每批補零後合計 40 秒的樣本數預算。
+  單一超長音檔仍完整保留並獨立成批；此預算不是顯存上限。
+  可變 batch 會改變每次更新的樣本數與跨 speaker 負樣本候選，不能視為和 baseline 相同的訓練設定。
+- eval 預設 `--batch_size 16 --max_batch_samples 640000 --num_workers 4`，依音長分組，
+  分數以 utterance ID 對應；這些是推論設定。
+- `beta` 維持 baseline 排程：epoch 1–4 為 `0.2`，之後為 `0.05`；明確指定 `--beta` 才使用固定值。
+- 新訓練的 Rhythm/fusion `dropout` 為 `0.1`，對齊 baseline 分類器的機率；兩種架構套用 dropout 的位置與次數不同。
+- 新訓練省略 `--T_target`。數值型 `--T_target` 僅供重現舊四秒流程；eval 依 checkpoint 的
+  `config.json` 自動選擇完整語音或舊四秒模式，不會改變既有 checkpoint 的評估語意。
 
 ### 使用 W&B 紀錄訓練
 
