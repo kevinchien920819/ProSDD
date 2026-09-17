@@ -1,6 +1,8 @@
 import copy
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import torch
@@ -8,6 +10,8 @@ from transformers import Wav2Vec2Config, Wav2Vec2Model
 
 from model_stage1real import ProSDDStage1
 from model_stage2realfake import ProSDDStage2
+from data_utils_stage1real import ProSDDStage1Dataset
+from data_utils_stage2realfake import load_prosody_dict as load_stage2_prosody_dict
 from main_eval import inference_forward
 from multi_gpu import place_model, resolve_devices
 
@@ -39,6 +43,32 @@ def objective(out, labels):
 
 
 class PlacementTests(unittest.TestCase):
+    def test_stage2_loader_accepts_128_dimensional_prosody(self):
+        frame = ",".join(["0"] * 128)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            prosody_path = Path(tmpdir) / "prosody.txt"
+            prosody_path.write_text(f"LA_T_1138215\t{frame}\n")
+
+            prosody = load_stage2_prosody_dict(str(prosody_path))
+
+            # Targets are read on demand while the source file exists.
+            self.assertEqual(prosody["LA_T_1138215"].shape, (1, 128))
+
+    def test_stage1_dataset_accepts_128_dimensional_prosody(self):
+        frame = ",".join(["0"] * 128)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            prosody_path = Path(tmpdir) / "prosody.txt"
+            speaker_path = Path(tmpdir) / "speaker.txt"
+            prosody_path.write_text(f"103-1240-0000\t{frame}\n")
+            speaker_path.write_text("103\n")
+
+            dataset = ProSDDStage1Dataset(
+                str(prosody_path), str(speaker_path), tmpdir
+            )
+
+            self.assertEqual(dataset.prosody_dim, 128)
+            self.assertEqual(dataset.utt2pros["103-1240-0000"].shape, (1, 128))
+
     def compare(self, stage, pool, devices, training=True, layerdrop=0.0, freeze=False):
         torch.manual_seed(31)
         baseline = build(stage, pool).to(devices[0])
@@ -63,7 +93,7 @@ class PlacementTests(unittest.TestCase):
                          [n for n, _ in candidate.named_parameters()])
         inputs = (torch.randn(3, 31, device=devices[0]),
                   torch.randn(3, 192, device=devices[0]),
-                  torch.randn(3, 12, 256, device=devices[0]),
+                  torch.randn(3, 12, baseline.prosody_dim, device=devices[0]),
                   torch.tensor([0, 0, 1], device=devices[0]))
         labels = torch.tensor([0, 1, 1], device=devices[0])
         optimizers = [torch.optim.AdamW(m.parameters(), lr=1e-4)

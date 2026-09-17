@@ -152,9 +152,11 @@ if __name__ == "__main__":
     parser.add_argument("--wav_dir_train", type=str, required=True)
     parser.add_argument("--wav_dir_dev", type=str, required=True)
     parser.add_argument("--spkmean_txt_train", type=str, required=True)   # spk -> 192
-    parser.add_argument("--prosody_txt_train", type=str, required=True)   # utt -> (T,256)
+    parser.add_argument("--prosody_txt_train", type=str, required=True)   # utt -> (T,D)
     parser.add_argument("--spkmean_txt_dev", type=str, required=True)
     parser.add_argument("--prosody_txt_dev", type=str, required=True)
+    parser.add_argument("--prosody_dim", type=int, choices=[128, 256], default=None,
+                        help="Prosody feature dimension; inferred from training data by default")
 
     parser.add_argument("--stage1_ckpt", type=str, default=None)
 
@@ -234,7 +236,10 @@ if __name__ == "__main__":
         augment_algo=args.algo,
         augment_prob=args.augment_prob,
         aug_args=args,
+        prosody_dim=args.prosody_dim,
     )
+    args.prosody_dim = train_dataset.prosody_dim
+    print(f"Prosody dim: {args.prosody_dim}", flush=True)
 
     dev_dataset = ProSDDStage2Dataset(
         utt_ids=dev_utts,
@@ -250,6 +255,7 @@ if __name__ == "__main__":
         augment_algo=0,
         augment_prob=0.0,
         aug_args=None,
+        prosody_dim=args.prosody_dim,
     )
 
     print(f"Train samples: {len(train_dataset)}", flush=True)
@@ -276,6 +282,7 @@ if __name__ == "__main__":
 
     # model
     model = ProSDDStage2(
+        prosody_dim=args.prosody_dim,
         mask_prob=args.mask_prob,
         mask_span_len=args.mask_span_len,
         tau=args.tau,

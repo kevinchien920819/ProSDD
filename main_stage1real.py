@@ -57,6 +57,8 @@ if __name__ == "__main__":
     parser.add_argument("--wav_dir_train", type=str, required=True)
     parser.add_argument("--wav_dir_dev", type=str, required=True)
     parser.add_argument("--audio_ext", type=str, default=".flac")
+    parser.add_argument("--prosody_dim", type=int, choices=[128, 256], default=None,
+                        help="Prosody feature dimension; inferred from training data by default")
 
     # -------- training --------
     parser.add_argument("--epochs", type=int, default=50)
@@ -89,13 +91,17 @@ if __name__ == "__main__":
         spkmean_txt=args.train_spkmean_txt,
         wav_dir=args.wav_dir_train,
         audio_ext=args.audio_ext,
+        prosody_dim=args.prosody_dim,
     )
+    args.prosody_dim = train_dataset.prosody_dim
+    print(f"Prosody dim: {args.prosody_dim}", flush=True)
 
     dev_dataset = ProSDDStage1Dataset(
         prosody_txt=args.dev_prosody_txt,
         spkmean_txt=args.dev_spkmean_txt,
         wav_dir=args.wav_dir_dev,
         audio_ext=args.audio_ext,
+        prosody_dim=args.prosody_dim,
     )
 
     print(f"Train samples: {len(train_dataset)}", flush=True)
@@ -119,6 +125,7 @@ if __name__ == "__main__":
 
     # model
     model = ProSDDStage1(
+        prosody_dim=args.prosody_dim,
         mask_prob=args.mask_prob,
         mask_span_len=args.mask_span_len,
         tau=args.tau,

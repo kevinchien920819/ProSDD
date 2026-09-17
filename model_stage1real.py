@@ -10,7 +10,7 @@ class ProSDDStage1(nn.Module):
         mask_prob=0.25,
         mask_span_len=8,
         tau=0.07,
-        out_dim=448,
+        prosody_dim=128,
         num_time_neg=50,
         num_spk_neg=50,
     ):
@@ -21,7 +21,7 @@ class ProSDDStage1(nn.Module):
         self.tau = tau
 
         self.spk_dim = 192
-        self.prosody_dim = 256
+        self.prosody_dim = int(prosody_dim)
         self.out_dim = self.spk_dim + self.prosody_dim
 
         self.pros_ln = nn.LayerNorm(self.prosody_dim)
@@ -41,8 +41,8 @@ class ProSDDStage1(nn.Module):
         self.mask_embed = nn.Parameter(torch.zeros(self.hidden_dim))
         nn.init.normal_(self.mask_embed, mean=0.0, std=0.02)
 
-        # project 1024 -> 448
-        self.final_proj = nn.Linear(self.hidden_dim, out_dim)
+        # project SSL features to speaker + prosody targets
+        self.final_proj = nn.Linear(self.hidden_dim, self.out_dim)
 
 
     ### Masking ###
@@ -70,8 +70,8 @@ class ProSDDStage1(nn.Module):
     # 50 time + 50 speaker
     def _contrastive_loss(self, pred, target, mask, spk_ids):
         """
-        pred:   (B, T, 448)
-        target: (B, T, 448) = [spk | prosody]
+        pred:   (B, T, 192 + prosody_dim)
+        target: (B, T, 192 + prosody_dim) = [spk | prosody]
         mask:   (B, T) bool
         spk_ids: (B,)
         """
@@ -182,7 +182,7 @@ class ProSDDStage1(nn.Module):
         """
         wav:         (B, samples)
         spk_emb:     (B, 192)
-        prosody_emb: (B, T', 256)
+        prosody_emb: (B, T', prosody_dim)
         spk_ids:     (B,)
         """
         #feature encoder
@@ -218,7 +218,7 @@ class ProSDDStage1(nn.Module):
         elif Tp > T:
             prosody_emb = prosody_emb[:, :T, :]
 
-        #build GT targets (B,T,448) = [spk(192) | prosody(256)]
+        #build GT targets (B,T,out_dim) = [spk(192) | prosody(prosody_dim)]
         spk = spk_emb.unsqueeze(1).expand(B, T, spk_emb.size(-1))
         prosody_emb = self.pros_ln(prosody_emb)
         target = torch.cat([spk, prosody_emb], dim=-1)
@@ -237,8 +237,8 @@ class ProSDDStage1(nn.Module):
         )
         ctx = outputs.last_hidden_state  # (B,T,1024)
 
-        #project 1024 -> 448
-        pred = self.final_proj(ctx)      # (B,T,448)
+        #project hidden_dim -> out_dim
+        pred = self.final_proj(ctx)      # (B,T,out_dim)
 
         #contrastive loss
         return self._contrastive_loss(pred, target, mask, spk_ids)

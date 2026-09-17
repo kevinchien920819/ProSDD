@@ -2,13 +2,14 @@ import os
 import random
 import subprocess
 import tempfile
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Optional
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torchaudio
 from torch.utils.data import Dataset
+from prosody_utils import load_prosody_dict
 from RawBoost import (
     ISD_additive_noise,
     LnL_convolutive_noise,
@@ -132,25 +133,33 @@ def load_audio(path: str, target_sr: int = SAMPLING_RATE, max_len: int = TARGET_
     return wav
 
 def load_utt_spk_label(list_path: str) -> Tuple[List[str], List[str], List[int]]:
+    """讀取原生 ASVspoof 2019（5 欄）或 ASVspoof5（10 欄）protocol。"""
     utt_ids, spk_ids, labels = [], [], []
-    with open(list_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
+    seen = set()
+    with open(list_path, encoding="utf-8-sig") as f:
+        for line_number, line in enumerate(f, 1):
+            if not line.strip() or line.lstrip().startswith("#"):
                 continue
             parts = line.split()
-            if len(parts) < 5:
-                raise ValueError(f"Malformed line: {line}")
+            if len(parts) not in (5, 10):
+                raise ValueError(f"{list_path}:{line_number}: expected 5 or 10 protocol columns")
             spk = parts[0]
             utt = parts[1]
-            lab = parts[4].lower()
+            lab = parts[4 if len(parts) == 5 else 8].lower()
+            if lab not in ("bonafide", "spoof"):
+                raise ValueError(f"{list_path}:{line_number}: unknown label {lab!r}")
+            if utt in seen:
+                raise ValueError(f"{list_path}:{line_number}: duplicate utterance {utt}")
+            seen.add(utt)
             utt_ids.append(utt)
             spk_ids.append(spk)
             labels.append(1 if lab == "bonafide" else 0)
 
+    if not utt_ids:
+        raise ValueError(f"Empty protocol: {list_path}")
     return utt_ids, spk_ids, labels
 
-def load_spk_mean_embeddings(spk_txt: str) -> Dict[str, torch.Tensor]:
+def load_spk_mean_embeddings(spk_txt: str, *, skip_bad_entries=False) -> Dict[str, torch.Tensor]:
     spk2emb = {}
     with open(spk_txt, "r") as f:
         for line in f:
@@ -159,33 +168,16 @@ def load_spk_mean_embeddings(spk_txt: str) -> Dict[str, torch.Tensor]:
                 continue
             parts = line.split()
             spk = parts[0]
-            vec = torch.tensor([float(x) for x in parts[1:]], dtype=torch.float32)
+            try:
+                vec = torch.tensor([float(x) for x in parts[1:]], dtype=torch.float32)
+            except ValueError:
+                if not skip_bad_entries:
+                    raise
+                spk2emb.pop(spk, None)
+                continue
             spk2emb[spk] = vec
     return spk2emb
 
-
-def _parse_prosody_line(line: str) -> Tuple[str, np.ndarray]:
-    line = line.strip()
-    utt, frames_str = line.split("\t")
-    frames = frames_str.split("|")
-    vecs = [np.fromstring(fr, sep=",", dtype=np.float32) for fr in frames]
-    pros = np.stack(vecs, axis=0)  # [T, 256]
-    return utt, pros
-
-def load_prosody_dict(prosody_txt: str, expected_dim: int = 256) -> Dict[str, torch.Tensor]:
-    utt2pros = {}
-    with open(prosody_txt, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            utt, pros = _parse_prosody_line(line)
-            if pros.ndim != 2 or pros.shape[1] != expected_dim:
-                raise ValueError(
-                    f"Prosody dim mismatch for {utt}: got {pros.shape}, expected (*,{expected_dim})"
-                )
-            utt2pros[utt] = torch.from_numpy(pros)  # float32
-    return utt2pros
 
 class ProSDDStage2Dataset(Dataset):
     def __init__(
@@ -195,7 +187,7 @@ class ProSDDStage2Dataset(Dataset):
         labels: List[int],
         wav_dir: str,
         spkmean_txt: str,      # spk_id_str -> 192
-        prosody_txt: str,      # utt_id -> (T,256)
+        prosody_txt: str,      # utt_id -> (T,D)
         sr: int = SAMPLING_RATE,
         max_len: int = TARGET_SAMPLES,
         audio_ext: str = ".flac",
@@ -203,6 +195,8 @@ class ProSDDStage2Dataset(Dataset):
         augment_algo: int = 0,
         augment_prob: float = 0.0,
         aug_args=None,
+        prosody_dim: Optional[int] = None,
+        skip_bad_entries: bool = False,
     ):
         assert len(utt_ids) == len(spk_ids) == len(labels)
         self.utt_ids = utt_ids
@@ -214,8 +208,9 @@ class ProSDDStage2Dataset(Dataset):
         self.audio_ext = audio_ext
         uniq_spk = sorted(set(self.spk_ids))
         self.spk2idx = {s: i for i, s in enumerate(uniq_spk)}
-        self.spk2emb = load_spk_mean_embeddings(spkmean_txt)
-        self.utt2pros = load_prosody_dict(prosody_txt, 256)
+        self.spk2emb = load_spk_mean_embeddings(spkmean_txt, skip_bad_entries=skip_bad_entries)
+        self.utt2pros = load_prosody_dict(prosody_txt, prosody_dim, skip_bad_entries=skip_bad_entries)
+        self.prosody_dim = self.utt2pros.prosody_dim
         self.augment_fn = augment_fn
         self.augment_algo = int(augment_algo)
         self.augment_prob = float(augment_prob)
@@ -234,6 +229,8 @@ class ProSDDStage2Dataset(Dataset):
         try:
             aug_np = self.augment_fn(wav_np, self.sr, self.aug_args, self.augment_algo).astype("float32")
             aug_t = torch.tensor(aug_np, dtype=torch.float32)
+        except (MemoryError, torch.OutOfMemoryError):
+            raise
         except Exception as e:
             print(f"[WARN] RawBoost failed: {e}", flush=True)
             return wav
@@ -261,7 +258,7 @@ class ProSDDStage2Dataset(Dataset):
         if utt_id not in self.utt2pros:
             print(f"[SKIP] Missing prosody emb for utt={utt_id}", flush=True)
             return None
-        pros_emb = self.utt2pros[utt_id]    # (T,256)
+        pros_emb = self.utt2pros[utt_id]    # (T,D)
 
         wav_path = os.path.join(self.wav_dir, utt_id + self.audio_ext)
         try:

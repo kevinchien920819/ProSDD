@@ -4,6 +4,8 @@ import torch.nn.functional as F
 from transformers import Wav2Vec2Model
 from typing import Optional
 
+from prosody_utils import infer_checkpoint_prosody_dim
+
 
 class ProSDDStage2(nn.Module):
 
@@ -19,6 +21,7 @@ class ProSDDStage2(nn.Module):
         num_spk_neg: int = 50,
         T_target: int = 200,
         classifier_pool: str = "mean",  
+        prosody_dim: int = 128,
     ):
         super().__init__()
 
@@ -27,8 +30,8 @@ class ProSDDStage2(nn.Module):
         self.tau = float(tau)
 
         self.spk_dim = 192
-        self.prosody_dim = 256
-        self.out_dim = self.spk_dim + self.prosody_dim  # 448
+        self.prosody_dim = int(prosody_dim)
+        self.out_dim = self.spk_dim + self.prosody_dim
         self.T_target = int(T_target)
 
         self.num_time_neg = int(num_time_neg)
@@ -46,7 +49,7 @@ class ProSDDStage2(nn.Module):
 
         self.pros_ln = nn.LayerNorm(self.prosody_dim)
 
-        # 1024 -> 448 (Stage-1 head)
+        # hidden_dim -> 192 + prosody_dim (Stage-1 head)
         self.final_proj = nn.Linear(self.hidden_dim, self.out_dim)
 
         # classifier head (on clean ctx)
@@ -76,6 +79,15 @@ class ProSDDStage2(nn.Module):
             if k.startswith("module."):
                 k = k.replace("module.", "")
             new_state[k] = v
+
+        if "final_proj.weight" in new_state or "pros_ln.weight" in new_state:
+            checkpoint_dim = infer_checkpoint_prosody_dim(new_state, self.spk_dim)
+            if checkpoint_dim != self.prosody_dim:
+                raise ValueError(
+                    f"Prosody dim mismatch for Stage-1 checkpoint {ckpt_path}: "
+                    f"got {checkpoint_dim}, Stage-2 data/model expects {self.prosody_dim}. "
+                    "Use a Stage-1 checkpoint trained with the same prosody dimension."
+                )
 
         # ssl
         ssl_keys = {k.replace("ssl.", ""): v for k, v in new_state.items() if k.startswith("ssl.")}
@@ -226,7 +238,7 @@ class ProSDDStage2(nn.Module):
         elif Tp > T:
             prosody_emb = prosody_emb[:, :T, :]
 
-        # build GT target (B,T,448)
+        # build GT target (B,T,192 + prosody_dim)
         spk = spk_emb.unsqueeze(1).expand(B, T, self.spk_dim)
         prosody_n = self.pros_ln(prosody_emb)
         target = torch.cat([spk, prosody_n], dim=-1)

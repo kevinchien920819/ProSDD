@@ -5,3 +5,8 @@ output/
 __pycache__/
 dataset
 /prosody_txt/
+/.gpu-train-monitor/
+
+prosody_checkpoint/
+prosody_full_txt/
+prosody_vad_txt/
