@@ -10,3 +10,5 @@ dataset
 prosody_checkpoint
 prosody_full_txt/
 prosody_vad_txt/
+
+docs/research/*

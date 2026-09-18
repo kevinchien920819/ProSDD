@@ -161,7 +161,7 @@ class FullUtteranceRhythmTests(unittest.TestCase):
             stage1 = ProSDDStage1(model_name="tiny", prosody_dim=128)
             torch.save(stage1.state_dict(), checkpoint)
             namespace = runpy.run_path(training.__file__, run_name="__main__")
-            model, config = evaluation.load_model(log_dir / "model_epoch_1.pth")
+            model, config = evaluation.load_model(log_dir / "model_best.pth")
         for name in ("train_loader", "dev_loader"):
             loader = namespace[name]
             self.assertEqual(len(loader), expected_batches)

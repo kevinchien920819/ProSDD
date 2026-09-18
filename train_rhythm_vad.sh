@@ -8,7 +8,7 @@ set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 # Step 0 使用的 VAD MPM teacher checkpoint；可直接修改為自己的目錄。
 checkpoint_dir="${VAD_TEACHER_CHECKPOINT:-prosody_checkpoint}"
-mkdir -p prosody_vad_txt output/logs_stage1contrastived_vadv2 output/logs_stage2realfake_rhythm_vad
+mkdir -p prosody_vad_txt output/logs_stage1contrastived_vadv2 output/logs_stage2realfake_rhythm_vad_full
 
 ########## Step 0: extract prosody ##########
 # ASVspoof2019 LA（utt ID 在第 2 欄，utt_col 使用從 0 開始的索引）
@@ -65,7 +65,7 @@ export WANDB_MODE="${WANDB_MODE:-disabled}"
 ########## Step 2: Stage 2 + Rhythm (ASVspoof2019 LA train / dev) ##########
 export WANDB_NAME="${WANDB_STAGE2_NAME:-stage2-rhythm-vad-full-asvspoof2019}"
 
-# 接續上方 VAD Stage 1 第 50 個 epoch 的 checkpoint，使用 VAD frame-level prosody targets。
+# 使用指定的 Stage 1 第 50 個 epoch checkpoint，使用 VAD frame-level prosody targets。
 # 請將下方兩個 --duration_csv 路徑改成同一份 train/dev protocol 對應的 syllabification CSV。
 # CSV 需包含音節起訖時間及每個音節的 duration；兩個 prosody 版本可共用這兩份 CSV。
 # Loss 對齊 baseline：epoch 1–4 使用 cls + 0.2 * ssl，第 5 個 epoch 起使用 cls + 0.05 * ssl。
@@ -114,4 +114,4 @@ uv run --locked python main_stage2realfake_rhythm.py \
   --log_dir output/logs_stage2realfake_rhythm_vad_full
 
 # Stage 2 的 main 每個 epoch 會執行 dev 驗證並記錄 loss、accuracy、EER。
-# 輸出包含 config.json、metrics.jsonl、model_epoch_*.pth 與最低 dev EER 的 model_best.pth。
+# 輸出包含 config.json、metrics.jsonl、最低 val loss 的 model_best.pth。

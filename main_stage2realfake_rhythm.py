@@ -301,7 +301,7 @@ if __name__ == "__main__":
     if not Path(args.stage1_ckpt).is_file():
         parser.error(f"Stage I checkpoint does not exist: {args.stage1_ckpt}")
     log_dir = Path(args.log_dir)
-    if (log_dir / "config.json").exists() or (log_dir / "model_epoch_1.pth").exists():
+    if any((log_dir / name).exists() for name in ("config.json", "model_best.pth", "model_epoch_1.pth")):
         parser.error("log_dir already contains a run; choose a new --log_dir")
 
     set_random_seed(args.seed)
@@ -494,7 +494,7 @@ if __name__ == "__main__":
     }
     (log_dir / "duration_filter.json").write_text(json.dumps(duration_filter, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     (log_dir / "config.json").write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    best_eer = float("inf")
+    best_val_loss = float("inf")
     with wandb.init(
         project=args.wandb_project,
         entity=args.wandb_entity,
@@ -559,16 +559,15 @@ if __name__ == "__main__":
                 ),
                 step=epoch,
             )
-            torch.save(model.state_dict(), log_dir / f"model_epoch_{epoch}.pth")
-            if val["eer"] < best_eer:
-                best_eer = val["eer"]
+            if val["loss"] < best_val_loss:
                 torch.save(model.state_dict(), log_dir / "model_best.pth")
+                best_val_loss = val["loss"]
             print(
                 f"Epoch {epoch:03d} | beta={beta_eff:.3f} | Train={train['loss']:.4f} "
                 f"(CLS={train['cls_loss']:.4f}, SSL={train['ssl_loss']:.4f}) | "
                 f"Val={val['loss']:.4f} (CLS={val['cls_loss']:.4f}, SSL={val['ssl_loss']:.4f}) | "
                 f"Acc={val['acc']:.2%} | Balanced={val['acc_balanced']:.2%} | "
-                f"EER={val['eer']:.2%} | Best EER={best_eer:.2%} | "
+                f"EER={val['eer']:.2%} | Best Val Loss={best_val_loss:.4f} | "
                 f"Samples train/dev={train['samples']}/{val['samples']} | "
                 f"Skipped train/dev={train['skipped_samples']}/{val['skipped_samples']}",
                 flush=True,

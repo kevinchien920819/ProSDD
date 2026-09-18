@@ -79,9 +79,9 @@ We also release the evaluation scores for all provided checkpoints.
 
 ```bash
 uv run --locked python -m evaluation_metric \
-  --score_path output/eval_stage2_epoch50/asvspoof2019_la_eval.txt \
+  --score_path output/eval_stage2_best/asvspoof2019_la_eval.txt \
   --protocol_path dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.eval.trl.txt \
-  --save_metrics_to output/eval_stage2_epoch50/asvspoof2019_la_eval.metrics.json
+  --save_metrics_to output/eval_stage2_best/asvspoof2019_la_eval.metrics.json
 ```
 
 若要在推論後直接計算，在 `main_eval.py` 命令加上
@@ -197,7 +197,7 @@ VAD teacher 加上 `--teacher_kind vad --teacher_checkpoint <實際 checkpoint �
 `train_rhythm.sh` 的 Step 0 以註解列出完整語音 train/dev targets 的抽取指令，
 需手動單獨執行以準備 `prosody_full_txt/`。腳本不會自動抽取。
 準備完成後，執行 `bash train_rhythm.sh` 進行訓練與評估，輸出至
-`output/logs_stage2realfake_rhythm_syllable_full/` 與 `output/eval_stage2_epoch50_rhythm_syllable_full/`；
+`output/logs_stage2realfake_rhythm_syllable_full/` 與 `output/eval_stage2_best_rhythm_syllable_full/`；
 `EVAL_ONLY=1` 可只評估，亦可透過原有的 `EVAL_CKPT`／`EVAL_SCORE_DIR` 指定輸入輸出。
 VAD 版本使用 `train_rhythm_vad.sh`，可用 `VAD_TEACHER_CHECKPOINT` 指定 teacher checkpoint。
 
@@ -248,8 +248,16 @@ export WANDB_NAME='stage1-experiment'
 `WANDB_API_KEY` 提供憑證；請勿將 API key 寫入程式或版本控制。
 `WANDB_ENTITY` 可省略以使用帳號預設位置；建議明確設定 `WANDB_PROJECT`。
 
-`--log_dir` 繼續保存每個 epoch 的 `model_epoch_<epoch>.pth`，並作為
-W&B 本機紀錄的根目錄（其下的 `wandb/`）。模型 checkpoint 不會自動上傳。
+`--log_dir` 的 checkpoint 儲存規則如下：
+
+- Stage 1：只在最後一個 epoch 完成後儲存 `model_last.pth`。
+- Stage 2（一般版與 Rhythm 版）：只保存最低 val loss 的 `model_best.pth`；
+  只有 loss 嚴格下降時才覆寫，平手或退步時不存檔。
+
+兩個階段都不再產生逐 epoch checkpoint。
+Stage 2 的 val loss 是當前 epoch 的 `alpha * cls_loss + beta * ssl_loss`，
+其中 `beta` 仍沿用既有排程。已存在的舊 checkpoint 不會自動刪除。
+此目錄也作為 W&B 本機紀錄的根目錄（其下的 `wandb/`）。模型 checkpoint 不會自動上傳。
 run 會在訓練正常結束或拋出例外時關閉。
 
 無網路時可先在本機保存數據，再於恢復連線後上傳：

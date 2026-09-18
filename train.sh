@@ -5,7 +5,7 @@
 # 已跑完的步驟可直接註解掉。
 set -euo pipefail
 cd "$(dirname "$0")"
-mkdir -p prosody_txt output/logs_stage1contrastived output/logs_stage2realfake_batch_8
+mkdir -p prosody_txt output/logs_stage1contrastived output/logs_stage2realfake_batch_8_sec_4_2019LA
 
 ########## Step 0: extract prosody ##########
 # ASVspoof2019 LA (protocol 第 1 欄是 utt ID)
@@ -58,7 +58,7 @@ export WANDB_NAME="${WANDB_NAME:-stage1-librispeech}"
 ########## Step 2: Stage 2 (ASVspoof2019 LA train / dev) ##########
 export WANDB_NAME="${WANDB_STAGE2_NAME:-stage2-asvspoof2019}"
 
-# 接續上方 Stage 1 第 50 個 epoch 的 checkpoint。
+# 使用指定的 Stage 1 第 50 個 epoch checkpoint。
 uv run --locked python main_stage2realfake.py \
   --train_list dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.train.trn.txt \
   --dev_list   dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.dev.trl.txt \
@@ -70,18 +70,18 @@ uv run --locked python main_stage2realfake.py \
   --prosody_txt_dev   prosody_txt/asvspoof2019_dev_prosody.txt \
   --stage1_ckpt output/logs_stage1contrastived/model_epoch_50.pth \
   --audio_ext .flac \
-  --audio_seconds 10 \
+  --audio_seconds 4 \
   --epochs 50 --batch_size 8 --num_workers 8 \
   --lr_ssl_backbone 1e-6 --lr_ssl_head 1e-4 --lr_cls 1e-5 \
   --weight_decay 1e-4 \
   --seed 1234 \
-  --wandb_tags prosdd stage2 asvspoof2019 \
-  --log_dir output/logs_stage2realfake_batch_8
+  --wandb_tags prosdd stage2 asvspoof2019 batch_8 second_4 \
+  --log_dir output/logs_stage2realfake_batch_8_sec_4_2019LA
 
 ########## Step 3: Evaluation (ASVspoof2019 LA / ASVspoof5 Track 1 / ASVspoof2021 LA) ##########
-# 使用 Stage 2 第 50 個 epoch 的 checkpoint，輸出逐音檔分數與 CM 指標。
-eval_ckpt="output/logs_stage2realfake_batch_8/model_epoch_50.pth"
-eval_score_dir="output/eval_stage2_epoch50"
+# 使用 Stage 2 最低 val loss 的 checkpoint，輸出逐音檔分數與 CM 指標。
+eval_ckpt="output/logs_stage2realfake_batch_8_sec_4_2019LA/model_best.pth"
+eval_score_dir="output/logs_stage2realfake_batch_8_sec_4_2019LA/eval_stage2_best"
 mkdir -p "$eval_score_dir"
 
 uv run --locked python main_eval.py \

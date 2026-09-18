@@ -183,7 +183,5 @@ if __name__ == "__main__":
 
             print(f"Epoch {epoch:03d} | Train={train_loss:.6f} | Val={val_loss:.6f}", flush=True)
 
-            torch.save(
-                model.state_dict(),
-                os.path.join(args.log_dir, f"model_epoch_{epoch}.pth")
-            )
+            if epoch == args.epochs:
+                torch.save(model.state_dict(), os.path.join(args.log_dir, "model_last.pth"))

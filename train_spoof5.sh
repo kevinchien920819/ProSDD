@@ -58,7 +58,7 @@ export WANDB_NAME="${WANDB_NAME:-stage1-librispeech}"
 ########## Step 2: Stage 2 (ASVspoof5 train / dev Track 1) ##########
 export WANDB_NAME="${WANDB_STAGE2_NAME:-stage2-asvspoof5}"
 
-# 接續上方 Stage 1 第 50 個 epoch 的 checkpoint。
+# 使用指定的 Stage 1 第 50 個 epoch checkpoint。
 # `asvspoof2024_*_spkmean.txt` 是 ASVspoof5 train/dev 的 speaker embedding 快取。
 uv run --locked python main_stage2realfake.py \
   --train_list dataset/ASVspoof5/ASVspoof5.train.tsv \
@@ -80,9 +80,9 @@ uv run --locked python main_stage2realfake.py \
   --log_dir output/logs_stage2realfake_batch_8_sec_10_asvspoof5
 
 ########## Step 3: Evaluation (ASVspoof5 Track 1) ##########
-# 使用 Stage 2 第 50 個 epoch 的 checkpoint，輸出逐音檔分數與 CM 指標。
-eval_ckpt="output/logs_stage2realfake_batch_8_sec_10_asvspoof5/model_epoch_50.pth"
-eval_score_dir="output/eval_stage2_epoch50"
+# 使用 Stage 2 最低 val loss 的 checkpoint，輸出逐音檔分數與 CM 指標。
+eval_ckpt="output/logs_stage2realfake_batch_8_sec_10_asvspoof5/model_best.pth"
+eval_score_dir="output/eval_stage2_best"
 mkdir -p "$eval_score_dir"
 
 uv run --locked python main_eval.py \

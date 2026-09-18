@@ -15,7 +15,7 @@ set -euo pipefail
 #   exit 1
 # fi
 # cd "$(dirname "$0")"
-mkdir -p prosody_vad_txt logs_stage1contrastived_vadv2 logs_stage2realfake_vad
+mkdir -p prosody_vad_txt output/logs_stage1contrastived_vadv2 output/logs_stage2realfake_vad
 
 ########## Step 0: extract prosody ##########
 # ASVspoof2019 LA (protocol 第 1 欄是 utt ID)
@@ -67,12 +67,12 @@ export WANDB_NAME="${WANDB_NAME:-stage1-librispeech}"
 #   --mask_prob 0.25 --mask_span_len 8 --tau 0.07 \
 #   --seed 1234 \
 #   --wandb_tags prosdd vad stage1 librispeech \
-#   --log_dir logs_stage1contrastived_vadv2
+#   --log_dir output/logs_stage1contrastived_vadv2
 
 ########## Step 2: Stage 2 (ASVspoof2019 LA train / dev) ##########
 export WANDB_NAME="${WANDB_STAGE2_NAME:-stage2-asvspoof2019}"
 
-# 接續上方 Stage 1 第 50 個 epoch 的 checkpoint，使用 VAD prosody 特徵。
+# 使用指定的 Stage 1 第 50 個 epoch checkpoint，使用 VAD prosody 特徵。
 # uv run --locked python main_stage2realfake.py \
 #   --train_list dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.train.trn.txt \
 #   --dev_list   dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.dev.trl.txt \
@@ -90,13 +90,13 @@ export WANDB_NAME="${WANDB_STAGE2_NAME:-stage2-asvspoof2019}"
 #   --weight_decay 1e-4 \
 #   --seed 1234 \
 #   --wandb_tags prosdd vad stage2 asvspoof2019 \
-#   --log_dir logs_stage2realfake_vad
+#   --log_dir output/logs_stage2realfake_vad
 
 
 ########## Step 3: Evaluation (ASVspoof2019 LA / ASVspoof5 Track 1 / ASVspoof2021 LA) ##########
-# 使用 Stage 2 第 50 個 epoch 的 checkpoint，輸出逐音檔分數與 CM 指標。
-eval_ckpt="output/logs_stage2realfake_vad/model_epoch_50.pth"
-eval_score_dir="output/eval_stage2_epoch50_vad"
+# 使用 Stage 2 最低 val loss 的 checkpoint，輸出逐音檔分數與 CM 指標。
+eval_ckpt="output/logs_stage2realfake_vad/model_best.pth"
+eval_score_dir="output/eval_stage2_best_vad"
 mkdir -p "$eval_score_dir"
 
 uv run --locked python main_eval.py \

@@ -350,6 +350,7 @@ if __name__ == "__main__":
     print("Using class weights:", weight.tolist(), flush=True)
 
     os.makedirs(args.log_dir, exist_ok=True)
+    best_val_loss = float("inf")
     with wandb.init(
         project=os.environ.get("WANDB_PROJECT"),
         entity=os.environ.get("WANDB_ENTITY"),
@@ -415,4 +416,6 @@ if __name__ == "__main__":
                 f"Cos(spk/pros) train={train_spk_cos:.3f}/{train_pros_cos:.3f} val={val_spk_cos:.3f}/{val_pros_cos:.3f}",
                 flush=True,
             )
-            torch.save(model.state_dict(), os.path.join(args.log_dir, f"model_epoch_{epoch}.pth"))
+            if val_loss < best_val_loss:
+                torch.save(model.state_dict(), os.path.join(args.log_dir, "model_best.pth"))
+                best_val_loss = val_loss

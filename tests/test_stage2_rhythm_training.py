@@ -434,7 +434,7 @@ class RhythmTrainingTests(unittest.TestCase):
             self.assertEqual(metrics[f"{split}/samples"], 2)
             self.assertEqual(metrics[f"{split}/skipped_samples"], 4)
         self.assertTrue(0 <= metrics["val/eer"] <= 1)
-        self.assertTrue((log_dir / "model_epoch_1.pth").is_file())
+        self.assertEqual(list(log_dir.glob("*.pth")), [log_dir / "model_best.pth"])
         self.assertTrue((log_dir / "model_best.pth").is_file())
 
     def test_main_uses_baseline_beta_schedule_for_training_validation_and_logs(self):
@@ -445,8 +445,25 @@ class RhythmTrainingTests(unittest.TestCase):
                 patch("wandb.init") as wandb_init:
             stage1 = ProSDDStage1(model_name="tiny", prosody_dim=128)
             torch.save(stage1.state_dict(), checkpoint)
-            self.run_training(argv)
+            saved_epochs = []
+            save = torch.save
+
+            def record_save(state, path):
+                records = (log_dir / "metrics.jsonl").read_text().splitlines()
+                saved_epochs.append(json.loads(records[-1])["epoch"])
+                save(state, path)
+
+            with patch("torch.save", side_effect=record_save):
+                self.run_training(argv)
         records = [json.loads(line) for line in (log_dir / "metrics.jsonl").read_text().splitlines()]
+        best_val_loss = float("inf")
+        expected_epochs = []
+        for row in records:
+            if row["val/loss"] < best_val_loss:
+                best_val_loss = row["val/loss"]
+                expected_epochs.append(row["epoch"])
+        self.assertEqual(saved_epochs, expected_epochs)
+        self.assertEqual(list(log_dir.glob("*.pth")), [log_dir / "model_best.pth"])
         self.assertEqual([row["beta"] for row in records], [.2, .2, .2, .2, .05])
         for row in records:
             for split in ("train", "val"):
@@ -511,7 +528,8 @@ class RhythmTrainingTests(unittest.TestCase):
                 "skipped_at_init": 1, "spoof": 1, "bonafide": 1,
             })
         self.assertTrue((log_dir / "model_best.pth").is_file())
-        saved = torch.load(log_dir / "model_epoch_1.pth", map_location="cpu", weights_only=True)
+        self.assertEqual(list(log_dir.glob("*.pth")), [log_dir / "model_best.pth"])
+        saved = torch.load(log_dir / "model_best.pth", map_location="cpu", weights_only=True)
         for name in (
             "ssl.encoder.layers.0.attention.q_proj.weight", "final_proj.weight",
             "cls_head.rhythm_embedding.0.weight", "cls_head.classifier.weight",

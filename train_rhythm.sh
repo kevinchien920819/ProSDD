@@ -7,7 +7,7 @@
 # 預設執行 Step 2 + Step 3；已有 checkpoint 時使用 EVAL_ONLY=1 bash train_rhythm.sh。
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
-mkdir -p prosody_txt output/logs_stage1contrastived output/logs_stage2realfake_rhythm
+mkdir -p prosody_txt output/logs_stage1contrastived output/logs_stage2realfake_rhythm_syllable_full
 
 ########## Step 0: extract prosody ##########
 # ASVspoof2019 LA（utt ID 在第 2 欄，utt_col 使用從 0 開始的索引）
@@ -62,7 +62,7 @@ export WANDB_MODE="${WANDB_MODE:-disabled}"
 ########## Step 2: Stage 2 + Rhythm (ASVspoof2019 LA train / dev) ##########
 export WANDB_NAME="${WANDB_STAGE2_NAME:-stage2-rhythm-full-asvspoof2019}"
 
-# 接續上方 Stage 1 第 50 個 epoch 的 checkpoint。
+# 使用指定的 Stage 1 第 50 個 epoch checkpoint。
 # protocol、音訊、speaker、prosody 與 duration CSV 全部對應 ASVspoof2019 LA train/dev。
 # duration 使用 TextGrid 產出的 ASVspoof2019_LA_cache_csv/cache_ASVspoof2019.LA_*.csv。
 # 舊的 ASVspoof2019_LA_csv/*.csv 缺少音節與 duration 欄位，無法供 Rhythm loader 使用。
@@ -106,13 +106,12 @@ fi
 
 # Stage 2 的 main 每個 epoch 會執行 dev 驗證並記錄 loss、accuracy、EER。
 # 輸出包含 config.json、duration_filter.json、skipped_samples.jsonl、metrics.jsonl、
-# model_epoch_*.pth 與最低 dev EER 的 model_best.pth。
+# 最低 val loss 的 model_best.pth。
 
 ########## Step 3: Rhythm Evaluation (ASVspoof2019 LA / ASVspoof5 Track 1) ##########
-# 使用第 50 個 epoch；可用 EVAL_CKPT / EVAL_SCORE_DIR 指定其他 checkpoint 與輸出目錄。
-# 例如評估 model_best.pth 時，也將 EVAL_SCORE_DIR 設為 output/eval_stage2_best_rhythm。
-eval_ckpt="${EVAL_CKPT:-output/logs_stage2realfake_rhythm_syllable_full/model_epoch_50.pth}"
-eval_score_dir="${EVAL_SCORE_DIR:-output/eval_stage2_epoch50_rhythm_syllable_full}"
+# 使用最低 val loss 的 model_best.pth；可用 EVAL_CKPT / EVAL_SCORE_DIR 指定其他 checkpoint 與輸出目錄。
+eval_ckpt="${EVAL_CKPT:-output/logs_stage2realfake_rhythm_syllable_full/model_best.pth}"
+eval_score_dir="${EVAL_SCORE_DIR:-output/eval_stage2_best_rhythm_syllable_full}"
 mkdir -p "$eval_score_dir"
 
 # Rhythm 推論需要 duration CSV，不使用一般 main_eval.py 的 --classifier_pool。
