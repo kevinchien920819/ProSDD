@@ -56,6 +56,7 @@ export WANDB_MODE="${WANDB_MODE:-disabled}"
 #   --ssl_lr 1e-6 --head_lr 1e-4 --weight_decay 1e-4 \
 #   --mask_prob 0.25 --mask_span_len 8 --tau 0.07 \
 #   --seed 1234 \
+#   --wandb_tags prosdd stage1 librispeech \
 #   --log_dir output/logs_stage1contrastived
 
 ########## Step 2: Stage 2 + Rhythm (ASVspoof2019 LA train / dev) ##########
@@ -98,6 +99,7 @@ uv run --locked python main_stage2realfake_rhythm.py \
   --d_model 256 --nhead 4 --n_rhythm_encoder_layers 2 --n_cls_encoder_layers 4 \
   --dropout 0.1 --max_position_embeddings 5000 \
   --algo 3 --augment_prob 0.5 \
+  --wandb_tags prosdd rhythm stage2 full-utterance asvspoof2019 \
   --seed 1234 \
   --log_dir output/logs_stage2realfake_rhythm_syllable_full
 fi

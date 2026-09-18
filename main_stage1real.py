@@ -76,6 +76,8 @@ if __name__ == "__main__":
     parser.add_argument("--mask_span_len", type=int, default=8)
     parser.add_argument("--tau", type=float, default=0.07)
     parser.add_argument("--log_dir", type=str, default="logs_stage1contrastive")
+    parser.add_argument("--wandb_tags", nargs="*", default=None,
+                        help="Optional W&B tags, for example: --wandb_tags prosdd stage1")
 
     args = parser.parse_args()
     set_random_seed(args.seed)
@@ -162,6 +164,7 @@ if __name__ == "__main__":
         project=os.environ.get("WANDB_PROJECT"),
         entity=os.environ.get("WANDB_ENTITY"),
         job_type="stage1",
+        tags=args.wandb_tags,
         config=vars(args),
         dir=args.log_dir,
     ) as run:

@@ -280,6 +280,8 @@ def build_parser():
     parser.add_argument("--wandb_project", type=str, default=os.environ.get("WANDB_PROJECT", "ProSDD"))
     parser.add_argument("--wandb_entity", type=str, default=os.environ.get("WANDB_ENTITY"))
     parser.add_argument("--wandb_name", type=str, default=os.environ.get("WANDB_NAME"))
+    parser.add_argument("--wandb_tags", nargs="*", default=None,
+                        help="Optional W&B tags, for example: --wandb_tags prosdd rhythm")
     return parser
 
 
@@ -499,6 +501,7 @@ if __name__ == "__main__":
         name=args.wandb_name,
         mode=args.wandb_mode,
         job_type="stage2-rhythm",
+        tags=args.wandb_tags,
         config=config,
         dir=str(log_dir),
     ) as run, (log_dir / "metrics.jsonl").open("w", encoding="utf-8") as metrics_file, \
