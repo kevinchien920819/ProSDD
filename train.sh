@@ -52,6 +52,7 @@ export WANDB_NAME="${WANDB_NAME:-stage1-librispeech}"
 #   --ssl_lr 1e-6 --head_lr 1e-4 --weight_decay 1e-4 \
 #   --mask_prob 0.25 --mask_span_len 8 --tau 0.07 \
 #   --seed 1234 \
+#   --wandb_tags prosdd stage1 librispeech \
 #   --log_dir output/logs_stage1contrastived
 
 ########## Step 2: Stage 2 (ASVspoof2019 LA train / dev) ##########
@@ -69,10 +70,12 @@ uv run --locked python main_stage2realfake.py \
   --prosody_txt_dev   prosody_txt/asvspoof2019_dev_prosody.txt \
   --stage1_ckpt output/logs_stage1contrastived/model_epoch_50.pth \
   --audio_ext .flac \
+  --audio_seconds 10 \
   --epochs 50 --batch_size 8 --num_workers 8 \
   --lr_ssl_backbone 1e-6 --lr_ssl_head 1e-4 --lr_cls 1e-5 \
   --weight_decay 1e-4 \
   --seed 1234 \
+  --wandb_tags prosdd stage2 asvspoof2019 \
   --log_dir output/logs_stage2realfake_batch_8
 
 ########## Step 3: Evaluation (ASVspoof2019 LA / ASVspoof5 Track 1 / ASVspoof2021 LA) ##########

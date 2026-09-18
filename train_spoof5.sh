@@ -5,21 +5,21 @@
 # 已跑完的步驟可直接註解掉。
 set -euo pipefail
 cd "$(dirname "$0")"
-mkdir -p prosody_txt output/logs_stage1contrastived output/logs_stage2realfake_batch_8
+mkdir -p prosody_txt output/logs_stage1contrastived output/logs_stage2realfake_batch_8_sec_10_asvspoof5
 
 ########## Step 0: extract prosody ##########
 # ASVspoof5（utt ID 在第 2 欄；--utt_col 使用從 0 開始的索引）
-uv run --locked python extract_Prosody.py \
-  --protocol_txt dataset/ASVspoof5/ASVspoof5.train.tsv \
-  --audio_dir    dataset/ASVspoof5/flac_T \
-  --out_txt      prosody_txt/asvspoof5_train_prosody.txt \
-  --utt_col 1 --ext .flac --layer 7
+# uv run --locked python extract_Prosody.py \
+#   --protocol_txt dataset/ASVspoof5/ASVspoof5.train.tsv \
+#   --audio_dir    dataset/ASVspoof5/flac_T \
+#   --out_txt      prosody_txt/asvspoof5_train_prosody.txt \
+#   --utt_col 1 --ext .flac --layer 7
 
-uv run --locked python extract_Prosody.py \
-  --protocol_txt dataset/ASVspoof5/ASVspoof5.dev.track_1.tsv \
-  --audio_dir    dataset/ASVspoof5/flac_D \
-  --out_txt      prosody_txt/asvspoof5_dev_prosody.txt \
-  --utt_col 1 --ext .flac --layer 7
+# uv run --locked python extract_Prosody.py \
+#   --protocol_txt dataset/ASVspoof5/ASVspoof5.dev.track_1.tsv \
+#   --audio_dir    dataset/ASVspoof5/flac_D \
+#   --out_txt      prosody_txt/asvspoof5_dev_prosody.txt \
+#   --utt_col 1 --ext .flac --layer 7
 
 # # LibriSpeech (清單每行只有 utt ID；扁平 symlink 目錄由 protocols/ 與 dataset/LibriSpeech_flat/ 提供)
 # uv run --locked python extract_Prosody.py \
@@ -52,6 +52,7 @@ export WANDB_NAME="${WANDB_NAME:-stage1-librispeech}"
 #   --ssl_lr 1e-6 --head_lr 1e-4 --weight_decay 1e-4 \
 #   --mask_prob 0.25 --mask_span_len 8 --tau 0.07 \
 #   --seed 1234 \
+#   --wandb_tags prosdd stage1 librispeech \
 #   --log_dir output/logs_stage1contrastived
 
 ########## Step 2: Stage 2 (ASVspoof5 train / dev Track 1) ##########
@@ -70,15 +71,17 @@ uv run --locked python main_stage2realfake.py \
   --prosody_txt_dev   prosody_txt/asvspoof5_dev_prosody.txt \
   --stage1_ckpt output/logs_stage1contrastived/model_epoch_50.pth \
   --audio_ext .flac \
+  --audio_seconds 10 \
   --epochs 50 --batch_size 8 --num_workers 8 \
   --lr_ssl_backbone 1e-6 --lr_ssl_head 1e-4 --lr_cls 1e-5 \
   --weight_decay 1e-4 \
   --seed 1234 \
-  --log_dir output/logs_stage2realfake_batch_8
+  --wandb_tags prosdd stage2 asvspoof5 batch_8 second_10\
+  --log_dir output/logs_stage2realfake_batch_8_sec_10_asvspoof5
 
 ########## Step 3: Evaluation (ASVspoof5 Track 1) ##########
 # 使用 Stage 2 第 50 個 epoch 的 checkpoint，輸出逐音檔分數與 CM 指標。
-eval_ckpt="output/logs_stage2realfake_batch_8/model_epoch_50.pth"
+eval_ckpt="output/logs_stage2realfake_batch_8_sec_10_asvspoof5/model_epoch_50.pth"
 eval_score_dir="output/eval_stage2_epoch50"
 mkdir -p "$eval_score_dir"
 

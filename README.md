@@ -122,6 +122,12 @@ The repository provides separate scripts for each stage of the ProSDD pipeline:
 - `main_stage2realfake.py`: Train Stage 2 using bonafide and spoofed speech
 - `main_eval.py`: Evaluate a trained ProSDD checkpoint
 
+一般 ProSDD Stage 2 可用 `--audio_seconds` 控制固定輸入長度，預設為 4 秒。
+程式會以 16 kHz 自動換算 `max_len`，並按 XLS-R 每 20 ms 一個 frame 自動設定
+`T_target`（例如 6 秒為 96,000 samples 與 300 frames）。非 4 秒實驗必須使用
+相同長度重新抽取 prosody targets；否則音訊與 prosody 的時間對齊會失效。
+`--T_target` 僅保留給重現舊實驗時手動覆寫。
+
 ### Prosody 維度（128／256）
 
 Stage 1 與 Stage 2 預設從訓練 prosody 檔案自動判定維度，支援 128 與 256。
@@ -232,6 +238,10 @@ export WANDB_ENTITY='your-team-or-username'
 # 選用：指定本次 run 的顯示名稱
 export WANDB_NAME='stage1-experiment'
 ```
+
+可在訓練命令末尾以 `--wandb_tags` 指定一或多個標籤，例如
+`--wandb_tags prosdd stage1 baseline`。此選項適用於 Stage 1、一般 Stage 2
+與 Rhythm Stage 2。
 
 接著以原本的資料路徑與訓練參數執行 `main_stage1real.py` 或
 `main_stage2realfake.py`，預設會同步至 W&B。無互動環境可透過

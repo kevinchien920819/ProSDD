@@ -99,7 +99,7 @@ class ProsodyDimensionTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "Prosody dim mismatch"):
                         self.dataset(stage, prosody_dim=dataset.prosody_dim)
 
-    def run_training_entrypoint(self, stage, dim, explicit=False, dev_dim=None):
+    def run_training_entrypoint(self, stage, dim, explicit=False, dev_dim=None, audio_seconds=None):
         write_prosody(self.prosody, [dim, dim], frame_count=200)
         dev = self.directory / "dev.txt"
         write_prosody(dev, [dev_dim or dim, dev_dim or dim], frame_count=200)
@@ -118,6 +118,8 @@ class ProsodyDimensionTests(unittest.TestCase):
                      "--algo", "0"]
         if explicit:
             argv += ["--prosody_dim", str(dim)]
+        if audio_seconds is not None:
+            argv += ["--audio_seconds", str(audio_seconds)]
         script = ROOT / ("main_stage1real.py" if stage == 1 else "main_stage2realfake.py")
         with patch.object(sys, "argv", argv), \
                 patch("multi_gpu.resolve_devices", return_value=[torch.device("cpu")]), \
@@ -126,6 +128,13 @@ class ProsodyDimensionTests(unittest.TestCase):
             result = runpy.run_path(str(script), run_name="__main__")
             self.assertEqual(init.call_args.kwargs["config"]["prosody_dim"], dim)
         return result
+
+    def test_stage2_audio_seconds_derives_samples_and_frames(self):
+        result = self.run_training_entrypoint(2, 128, audio_seconds=6)
+        self.assertEqual(result["args"].target_samples, 96000)
+        self.assertEqual(result["args"].T_target, 300)
+        self.assertEqual(result["train_dataset"].max_len, 96000)
+        self.assertEqual(result["dev_dataset"].max_len, 96000)
 
     def test_training_entrypoints_use_detected_or_explicit_dimensions(self):
         for stage in (1, 2):

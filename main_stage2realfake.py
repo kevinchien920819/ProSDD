@@ -1,4 +1,5 @@
 import os
+import math
 import torch
 import argparse
 from multi_gpu import resolve_devices, place_model
@@ -13,7 +14,6 @@ from data_utils_stage2realfake import (
     process_Rawboost_feature,
     collate_stage2,
     SAMPLING_RATE,
-    TARGET_SAMPLES,
 )
 from utils import set_random_seed
 
@@ -175,8 +175,13 @@ if __name__ == "__main__":
     parser.add_argument("--tau", type=float, default=0.1)
     parser.add_argument("--num_time_neg", type=int, default=50)
     parser.add_argument("--num_spk_neg", type=int, default=50)
-    parser.add_argument("--T_target", type=int, default=200)
+    parser.add_argument("--audio_seconds", type=float, default=4.0,
+                        help="Center-crop/pad audio to this duration; derives max_len and T_target automatically")
+    parser.add_argument("--T_target", type=int, default=None,
+                        help="Optional legacy override for derived SSL/prosody frame count")
     parser.add_argument("--classifier_pool", type=str, default="mean", choices=["mean", "attn"])
+    parser.add_argument("--wandb_tags", nargs="*", default=None,
+                        help="Optional W&B tags, for example: --wandb_tags prosdd stage2")
 
     # -------- discriminative LR --------
     parser.add_argument("--lr_ssl_backbone", type=float, default=1e-6)
@@ -209,13 +214,31 @@ if __name__ == "__main__":
     parser.add_argument("--audio_ext", type=str, default=".flac")
 
     args = parser.parse_args()
+    if args.audio_seconds <= 0:
+        parser.error("--audio_seconds must be positive")
+    target_samples = round(args.audio_seconds * SAMPLING_RATE)
+    if target_samples < 400:
+        parser.error("--audio_seconds is too short for the XLS-R convolutional frontend")
+
+    # XLS-R's convolutional frontend has a total stride of 320 samples (20 ms
+    # at 16 kHz).  Ceil preserves the existing 4 s -> 200 frame convention.
+    derived_t_target = math.ceil(target_samples / 320)
+    if args.T_target is None:
+        args.T_target = derived_t_target
+    elif args.T_target < 1:
+        parser.error("--T_target must be positive")
+    args.target_samples = target_samples
     set_random_seed(args.seed)
 
     devices = resolve_devices()
     device = devices[0]
     print(f"Model devices: {devices}", flush=True)
     print(f"Using device: {device}", flush=True)
-    print(f"Audio: sr={SAMPLING_RATE}, samples={TARGET_SAMPLES}", flush=True)
+    print(
+        f"Audio: sr={SAMPLING_RATE}, seconds={args.audio_seconds}, "
+        f"samples={args.target_samples}, T_target={args.T_target}",
+        flush=True,
+    )
 
     # load protocol lists
     train_utts, train_spks, train_labels = load_utt_spk_label(args.train_list)
@@ -230,7 +253,7 @@ if __name__ == "__main__":
         spkmean_txt=args.spkmean_txt_train,
         prosody_txt=args.prosody_txt_train,
         sr=SAMPLING_RATE,
-        max_len=TARGET_SAMPLES,
+        max_len=args.target_samples,
         audio_ext=args.audio_ext,
         augment_fn=process_Rawboost_feature if args.algo != 0 else None,
         augment_algo=args.algo,
@@ -249,7 +272,7 @@ if __name__ == "__main__":
         spkmean_txt=args.spkmean_txt_dev,
         prosody_txt=args.prosody_txt_dev,
         sr=SAMPLING_RATE,
-        max_len=TARGET_SAMPLES,
+        max_len=args.target_samples,
         audio_ext=args.audio_ext,
         augment_fn=None,
         augment_algo=0,
@@ -331,6 +354,7 @@ if __name__ == "__main__":
         project=os.environ.get("WANDB_PROJECT"),
         entity=os.environ.get("WANDB_ENTITY"),
         job_type="stage2",
+        tags=args.wandb_tags,
         config=vars(args),
         dir=args.log_dir,
     ) as run:
