@@ -143,20 +143,6 @@ ASVspoof5 的 train／dev targets 若全部載入約需 61.7 GiB RAM，索引方
 程式會顯示索引進度。各個 DataLoader worker 分別開檔讀取；訓練期間請保持
 來源檔案不變，若檔案被覆寫，程式會要求重新建立 Dataset。
 
-`train_rhythm.sh` 已啟用 `--skip_bad_samples`：單筆 duration 缺少或損壞、
-speaker／prosody 特徵缺少或形狀錯誤、音檔讀取失敗、中央 4 秒內沒有完整音節、
-特徵含非有限值，或音訊太短而無法產生有效 CNN frame 時，會自動略過並記錄原因。
-剩餘樣本照常組成 batch；整批都不可用時繼續下一批。沒有啟用此參數時維持嚴格檢查。
-OOM、模型運算失敗、整份 CSV 欄位錯誤或訓練期間 prosody 檔案被覆寫，仍會回報錯誤。
-
-`config.json` 的 `dataset_counts` 記錄初始化篩選後的筆數；`duration_filter.json`
-保存初始化時略過的 ID 與理由。`skipped_samples.jsonl` 記錄所有略過項目的
-`split`、`epoch`、`utt_id`、`reason`（`epoch=0` 表示初始化篩選）。
-`metrics.jsonl` 的 `train/samples`、`val/samples` 是該 epoch 實際處理的筆數，
-`train/skipped_samples`、`val/skipped_samples` 則是讀取及組 batch 時略過的筆數。
-loss、accuracy 與 EER 以成功載入的樣本計算；有效評估集合可能小於原始 protocol。
-整個 epoch 無有效樣本，或 dev 剩下單一類別而無法計算 EER 時，仍會停止並回報原因。
-
 兩階段模型的 `pros_ln` 與 `final_proj` 都會使用判定後的維度：
 speaker 固定為 192 維，因此 prosody 為 128／256 維時，投影輸出分別為 320／448 維。
 啟動時會印出 `Prosody dim: ...`，W&B config 也會記錄實際的 `prosody_dim`。
@@ -166,54 +152,116 @@ speaker 固定為 192 維，因此 prosody 為 128／256 維時，投影輸出�
 Stage 2 使用的 Stage 1 checkpoint 必須與 Stage 2 資料維度一致。
 `main_eval.py` 會從 checkpoint 權重判定維度，評估時不需要另外指定。
 
-### Rhythm Stage 2：完整語音訓練
+### Rhythm 資料介面（crop 後即時抽取）
 
-`main_stage2realfake_rhythm.py` 預設保留整段音訊與全部音節，不再裁成四秒。
-XLS-R 的 frame 數與音節數皆可變；同一個 batch 只在右側補零，attention、
-SSL anchors 與負樣本取樣都排除 padding。音節 duration、deviation、相鄰差異
-與 nPVI 使用完整音檔的音節重新計算，cross-attention 融合方式維持不變。
+可設定目標秒數並對齊停頓的新模組為
+[`data_utils_rhythm.py`](data_utils_rhythm.py)。使用 `max_len=0` 保留完整音訊，
+或指定正秒數，每次 `dataset[idx]` 重新選取附近 word 之間的停頓作為起訖點。
+CSV 在初始化時讀取一次，`select_duration` 回傳片段特徵與起訖秒數，
+再由 `load_audio` 讀取該區間。短音訊置中補零後，呼叫
+[`extract_Prosody_rhythm.py`](extract_Prosody_rhythm.py) 的 `extract_prosody_rhythm`
+重新抽取該片段的 prosody，最後才對有效音訊套用 RawBoost。
+Teacher 接收乾淨音訊，權重共用且固定為 CPU 推論模式；每次取樣都重新計算 targets。
+`rhythm_sources` 選取層級；
+特徵只使用片段內完整音節的 duration，並重新計算 `devi_mu`、`mu_diff`。
 
-完整語音必須搭配重新抽取的 prosody targets，不能沿用原本四秒／200-frame cache。
-以下以 train 為例；dev 使用相同 teacher 與設定另行抽取：
+Dataset 建構子以 `prosody_model` 接收已載入的 MPM／VAD teacher，取代 `prosody_txt`。
+特徵維度從 teacher 判定；Dataset、collate 與學生模型須使用相同的 CNN kernel／stride。
+單筆仍回傳 `wav, spk_emb, pros_emb, spk_idx, label, duration_features, valid_samples, utt_id`。
 
-```bash
-uv run --locked python extract_full_prosody.py \
-  --protocol_txt dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.train.trn.txt \
-  --audio_dir dataset/ASVspoof2019/ASVspoof2019_LA_train/flac \
-  --out_txt prosody_full_txt/asvspoof2019_train_prosody.txt \
-  --utt_col 1 --ext .flac --layer 7
+```python
+from functools import partial
+from torch.utils.data import DataLoader
+from data_utils_rhythm import ProSDDStage2RhythmDataset, collate_stage2_rhythm
+from extract_full_prosody import load_prosody_teacher
+
+teacher = load_prosody_teacher()  # MPM；VAD 使用 load_prosody_teacher("vad", checkpoint)
+dataset = ProSDDStage2RhythmDataset(
+    utt_ids, spk_ids, labels, wav_dir, spkmean_txt, teacher, duration_csv,
+    max_len=4.0,
+)
+loader = DataLoader(
+    dataset, batch_size=2, num_workers=0,
+    collate_fn=partial(collate_stage2_rhythm, T_target=None),
+)
 ```
 
-VAD teacher 加上 `--teacher_kind vad --teacher_checkpoint <實際 checkpoint 目錄>`；
-該目錄必須包含 `model_config.yml` 與 `pytorch_model.bin`，並與 Stage 1 的 teacher 選擇相符。
-抽取工具沿用 teacher 原生的六秒窗口，逐段處理完整音檔（含最後不足六秒的尾段），
-再以實際時間戳插值到 XLS-R CNN receptive field 的中心。Teacher 的每段上下文有限，
-但沒有丟棄任何音訊區段；Stage 2 的 XLS-R 與融合模型仍一次接收完整語音。
+預設 CNN 為 XLS-R。擷取器使用實際時間中心產生 targets：16 kHz、四秒音訊為
+199 個有效 CNN frames。`collate_stage2_rhythm` 會 assert 單筆 prosody 與音訊的
+CNN frame 數相同，再統一 batch 的長度；`T_target=None` 保留所有 frame，
+指定數值則配合模型截斷或補零。音訊與 prosody 補零，rhythm 補 `-100`，
+兩種 mask 的 `True` 表示人工 padding。Prosody 在人工 padding 的位置清零，
+真實靜音的有效性由音訊範圍判定。`None` 樣本預設略過，整批無有效樣本回傳
+`{"skipped_samples": []}`；`skip_bad_samples=False` 遇到 `None` 會報錯。
+訓練入口另外開啟 `report_bad_samples=True`，讓 Dataset 將失敗的 ID／原因交給
+collate 的 `skipped_samples`，再由主程序統一寫入紀錄，支援多 worker。
 
-工具會同時寫入 `<prosody.txt>.meta.json`，記錄完整音長、CNN frame 幾何與 teacher 設定。
-訓練會驗證此 metadata、target frame 數及實際音長；缺少 metadata 的舊 cache 會直接報錯，
-不會自動拉長四秒 target。`--skip_bad_samples` 也不會隱藏音長／target 對應錯誤。
+小型抽取驗證（本機已有 MPM 與 XLS-R 快取）：
 
-`train_rhythm.sh` 的 Step 0 以註解列出完整語音 train/dev targets 的抽取指令，
-需手動單獨執行以準備 `prosody_full_txt/`。腳本不會自動抽取。
-準備完成後，執行 `bash train_rhythm.sh` 進行訓練與評估，輸出至
-`output/logs_stage2realfake_rhythm_syllable_full/` 與 `output/eval_stage2_best_rhythm_syllable_full/`；
-`EVAL_ONLY=1` 可只評估，亦可透過原有的 `EVAL_CKPT`／`EVAL_SCORE_DIR` 指定輸入輸出。
-VAD 版本使用 `train_rhythm_vad.sh`，可用 `VAD_TEACHER_CHECKPOINT` 指定 teacher checkpoint。
+```bash
+HF_HUB_OFFLINE=1 OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 uv run --locked python extract_Prosody_rhythm.py \
+  --audio_path dataset/ASVspoof2019/ASVspoof2019_LA_dev/flac/LA_D_1047731.flac \
+  --start 0.6 --end 4.4
+```
 
-- 訓練預設 `--batch_size 32 --num_workers 8`，對齊原先 baseline 的實際 Stage 2 run。
-  訓練隨機打亂，dev 不打亂；最後一批保留，略過無效資料時實際筆數可能較少。
-- 訓練 `--max_batch_samples` 預設 `0`，停用音長預算，維持固定 batch 大小。
-  完整語音比四秒裁切需要更多顯存；不會自動縮小 batch 或裁切語音。
-  明確指定正值才啟用依音長分組的可變 batch，例如 `640000` 是每批補零後合計 40 秒的樣本數預算。
-  單一超長音檔仍完整保留並獨立成批；此預算不是顯存上限。
-  可變 batch 會改變每次更新的樣本數與跨 speaker 負樣本候選，不能視為和 baseline 相同的訓練設定。
-- eval 預設 `--batch_size 16 --max_batch_samples 640000 --num_workers 4`，依音長分組，
-  分數以 utterance ID 對應；這些是推論設定。
-- `beta` 維持 baseline 排程：epoch 1–4 為 `0.2`，之後為 `0.05`；明確指定 `--beta` 才使用固定值。
-- 新訓練的 Rhythm/fusion `dropout` 為 `0.1`，對齊 baseline 分類器的機率；兩種架構套用 dropout 的位置與次數不同。
-- 新訓練省略 `--T_target`。數值型 `--T_target` 僅供重現舊四秒流程；eval 依 checkpoint 的
-  `config.json` 自動選擇完整語音或舊四秒模式，不會改變既有 checkpoint 的評估語意。
+此例輸出 `samples=60800`、`prosody=(189, 256)`。加上 `--out_pt <新檔案.pt>`
+可保存 tensor；已存在的檔案不會覆寫。VAD 使用 `--teacher_kind vad --teacher_checkpoint <目錄>`。
+一般機器首次下載模型時省略 `HF_HUB_OFFLINE=1`。
+
+### Rhythm 完整訓練
+
+[`main_stage2realfake_rhythm.py`](main_stage2realfake_rhythm.py) 已串接 teacher、
+Stage 1 checkpoint、train/dev Dataset、SSL／分類聯合訓練、驗證、W&B 與模型儲存。
+不再接受 `--prosody_txt_train`／`--prosody_txt_dev`，也不需要先重抽完整 prosody 快取。
+Teacher 的種類、checkpoint、layer 與特徵維度應和 Stage 1 targets 一致；
+本機標準 MPM 與 `output/logs_stage1contrastived/model_epoch_50.pth` 都使用 256 維。
+
+在專案根目錄執行以下命令即可開始 ASVspoof2019 LA 訓練：
+
+```bash
+OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 uv run --locked python main_stage2realfake_rhythm.py \
+  --train_list dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.train.trn.txt \
+  --dev_list dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.dev.trl.txt \
+  --wav_dir_train dataset/ASVspoof2019/ASVspoof2019_LA_train/flac \
+  --wav_dir_dev dataset/ASVspoof2019/ASVspoof2019_LA_dev/flac \
+  --spkmean_txt_train spk_text/asvspoof2019_train_spkmean.txt \
+  --spkmean_txt_dev spk_text/asvspoof2019_dev_spkmean.txt \
+  --duration_csv_train dataset/ASVspoof2019/ASVspoof2019_LA_cache_csv/cache_ASVspoof2019.LA_train.csv \
+  --duration_csv_dev dataset/ASVspoof2019/ASVspoof2019_LA_cache_csv/cache_ASVspoof2019.LA_dev.csv \
+  --stage1_ckpt output/logs_stage1contrastived/model_epoch_50.pth \
+  --teacher_kind mpm --prosody_layer 7 \
+  --audio_seconds 4 --epochs 50 --batch_size 8 --num_workers 0 \
+  --rhythm_sources syllable --mask_prob 0.15 --tau 0.1 \
+  --algo 3 --augment_prob 0.5 --skip_bad_samples \
+  --wandb_mode disabled \
+  --log_dir output/logs_stage2realfake_rhythm_crop
+```
+
+- `--audio_seconds 4` 每次重新選 crop，邊界移至停頓，實際長度可能超過四秒；
+  `--audio_seconds 0` 保留整句。Train／dev 都重新抽取 targets，只有 train 套用 RawBoost。
+- `--T_target` 預設不指定，保留實際 CNN frames；不會自動把四秒設成 200。
+- `--num_workers 0` 在主程序執行 CPU teacher；正數使用 `spawn` 與常駐 workers，
+  共用凍結的 teacher 權重，每次取樣仍重新推論。
+- `--max_batch_samples` 可設定 batch 補零後的 sample 預算，以整句長度作 crop 上界；
+  單筆超出預算時獨立成批。預設 0 表示只依 `batch_size` 分批。
+- 聯合 loss 為 `alpha * cls_loss + beta * ssl_loss`，分類權重 `[0.1, 0.9]`。
+  預設前四輪 beta=0.2，第五輪起 0.05；`--beta` 可固定覆寫。沒有分類器凍結期。
+- VAD 改用 `--teacher_kind vad --teacher_checkpoint <VAD 目錄>`，並提供相符的 Stage 1 checkpoint。
+- W&B 可改成 `--wandb_mode offline`／`online`；省略時遵循 `WANDB_MODE`，未設定則為 online。
+
+`log_dir` 保存 `config.json`、`metrics.jsonl`、`duration_filter.json`、
+`skipped_samples.jsonl`、每輪 `model_epoch_<epoch>.pth`，以及最低 dev EER 的
+`model_best.pth`（相同 EER 保留較早的一輪）。Checkpoint 格式為模型 `state_dict`，
+不含 optimizer 續訓狀態。EER 在 JSON／W&B 中以 0–1 儲存。
+初始化排除記為 epoch 0；各輪略過筆數只計當輪讀取失敗的樣本。
+Dev 成功讀取的資料必須同時包含 bonafide 與 spoof，才能計算 EER。
+
+獨立評估入口 `main__eval_rhythm.py` 與舊的整套 shell 腳本
+`train_rhythm.sh`／`train_rhythm_vad.sh` 仍暫停使用；請直接執行上述訓練入口，
+每輪已包含 dev 驗證。
+
+與 baseline 訓練入口的八類流程差異及小型驗證結果，見
+[Stage 2 Rhythm 流程檢驗](docs/stage2-rhythm-flow-review.md)。
 
 ### 使用 W&B 紀錄訓練
 
@@ -277,26 +325,20 @@ W&B 的初始化、環境變數與同步方式可參考
 [環境變數文件](https://docs.wandb.ai/models/track/environment-variables)與
 [sync 指令文件](https://docs.wandb.ai/models/ref/cli/wandb-sync)。
 
-### 多顯卡運算（Stage 1／Stage 2／評估）
+### 單顯卡運算（Stage 1／Stage 2／評估）
 
-三個入口 `main_stage1real.py`、`main_stage2realfake.py`、`main_eval.py`
-統一使用 `CUDA_VISIBLE_DEVICES` 指定顯卡，不需要額外的命令列 GPU 參數。
-請在啟動 Python 程序前設定環境變數：
+Stage 1、一般與 Rhythm Stage 2 的訓練及評估皆將完整模型放在第一張
+可見 GPU（`cuda:0`）。可在啟動 Python 前使用 `CUDA_VISIBLE_DEVICES`
+選擇顯卡，例如 `CUDA_VISIBLE_DEVICES=2` 使用實體 GPU 2。
+即使環境中有多張可見 GPU，也只會使用第一張。
 
-- 未設定：預設只使用第一張可用 GPU。
-- `CUDA_VISIBLE_DEVICES=2`：只使用實體 GPU 2。
-- `CUDA_VISIBLE_DEVICES=2,3`：使用實體 GPU 2、3，啟用模型平行。
-- `CUDA_VISIBLE_DEVICES=0,1,2,3`：使用四張 GPU。
-- 沒有可用 CUDA GPU（包含設為空字串或 `-1`）：訓練使用 CPU；評估需要 CUDA，會回報錯誤。
-
-使用一般 `python` 單一程序啟動，不需使用 `torchrun`。
-如果執行環境已預先設定 `CUDA_VISIBLE_DEVICES`，程式會使用其中所有可見 GPU；
-只想用單卡時，請在啟動命令明確指定一張卡。
+沒有可用 CUDA GPU（包含設為空字串或 `-1`）時，訓練使用 CPU；
+評估需要 CUDA，會回報錯誤。
 
 例如，Stage 1 的完整命令範本（請替換資料路徑）：
 
 ```bash
-CUDA_VISIBLE_DEVICES=2,3 uv run --locked python main_stage1real.py \
+CUDA_VISIBLE_DEVICES=2 uv run --locked python main_stage1real.py \
   --train_prosody_txt /data/train_prosody.txt \
   --dev_prosody_txt /data/dev_prosody.txt \
   --train_spkmean_txt /data/train_spkmean.txt \
@@ -306,34 +348,5 @@ CUDA_VISIBLE_DEVICES=2,3 uv run --locked python main_stage1real.py \
   --batch_size 64
 ```
 
-CUDA 會將選定的 GPU 重新編號為程序內的 `cuda:0`、`cuda:1` 等。
-例如 `CUDA_VISIBLE_DEVICES=2,3` 對應實體 GPU 2、3，程式顯示為 `cuda:0`、`cuda:1`。
-第一個指定的 GPU 為主裝置，負責特徵擷取、投影、遮罩、損失與分類頭；
-Transformer 層則依序平均分配到指定的 GPU。每層輸出會回到主裝置，
-讓原本 encoder 的 LayerDrop 與最終 LayerNorm 流程保持相容。
-
-此實作採用模型平行，完整 batch 會依序通過各層。
-`--batch_size` 仍是每次 optimizer 更新的完整 batch 大小，不需乘上顯卡數。
-跨說話者負樣本候選集合、遮罩與負樣本抽樣規則、損失權重、
-學習率分組、凍結排程、資料順序、W&B 紀錄及 checkpoint 欄位名稱均維持原有設計。
-舊 checkpoint 可以直接用於多卡評估，多卡訓練輸出的 checkpoint
-也可用於原本單卡流程。
-
-這種配置分散 Transformer 參數、梯度、optimizer 狀態與部分 activation
-的記憶體需求，但各層仍依序運算，且有跨卡傳輸成本，**不保證加速或平均分配顯存**。
-主裝置仍需容納完整 batch 的特徵與對比損失，增加顯卡不保證能消除所有 OOM。
-訓練中的 dropout 使用各裝置的隨機數產生器，加上浮點運算差異，
-即使 seed 相同，多卡與單卡也不保證逐位元相同或產生完全相同的訓練軌跡；
-這裡保留的是模型與訓練演算法的邏輯。
-韻律特徵擷取腳本 `extract_Prosody.py` 不適用此參數。
-
-驗證方式（使用小型隨機初始化 Wav2Vec2，不下載預訓練權重）：
-
-```bash
-uv run --locked python -m unittest discover -s tests -v
-```
-
-測試涵蓋兩個訓練階段、兩種分類 pooling、輸出與梯度、一次 AdamW 更新、
-LayerDrop、分類頭凍結、評估入口及 checkpoint 嚴格載入。
-CPU 測試驗證裝置轉移 hook 不改變計算；實際跨 GPU 的輸出、反向傳播與更新測試
-需要至少兩張可用 CUDA 顯卡，否則會標示為 skipped。
+CUDA 會將選定的 GPU 編號為程序內的 `cuda:0`。
+模型 checkpoint 的權重名稱與格式維持相容，既有 checkpoint 仍可直接載入。
