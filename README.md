@@ -216,10 +216,15 @@ Stage 1 checkpoint、train/dev Dataset、SSL／分類聯合訓練、驗證、W&B
 Teacher 的種類、checkpoint、layer 與特徵維度應和 Stage 1 targets 一致；
 本機標準 MPM 與 `output/logs_stage1contrastived/model_epoch_50.pth` 都使用 256 維。
 
-在專案根目錄執行以下命令即可開始 ASVspoof2019 LA 訓練：
+在專案根目錄執行 `bash train_rhythm.sh` 即可開始 ASVspoof2019 LA 訓練，成功後自動以
+`model_best.pth` 執行 eval split 的獨立評估。可用 `RHYTHM_LOG_DIR=<路徑>` 指定訓練
+輸出目錄；評估分數、指標、protocol 與 coverage 存於該目錄下的 `eval/`。
+訓練使用 W&B `online` 模式，並附上 `prosdd`、`rhythm`、`stage2`、`asvspoof2019` tags。
+
+腳本中的 Stage 2 訓練命令如下，可依需要調整參數：
 
 ```bash
-OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 uv run --locked python main_stage2realfake_rhythm.py \
+uv run --locked python main_stage2realfake_rhythm.py \
   --train_list dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.train.trn.txt \
   --dev_list dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.dev.trl.txt \
   --wav_dir_train dataset/ASVspoof2019/ASVspoof2019_LA_train/flac \
@@ -230,18 +235,22 @@ OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 uv run --locked python main_stage2realfake_r
   --duration_csv_dev dataset/ASVspoof2019/ASVspoof2019_LA_cache_csv/cache_ASVspoof2019.LA_dev.csv \
   --stage1_ckpt output/logs_stage1contrastived/model_epoch_50.pth \
   --teacher_kind mpm --prosody_layer 7 \
-  --audio_seconds 4 --epochs 50 --batch_size 8 --num_workers 0 \
+  --audio_seconds 4 --epochs 50 --batch_size 8 --num_workers 8 \
+  --lr_ssl_backbone 1e-6 --lr_ssl_head 1e-4 \
+  --lr_rhythm 1e-5 --lr_cls 1e-5 \
+  --weight_decay 1e-4 --seed 1234 \
   --rhythm_sources syllable --mask_prob 0.15 --tau 0.1 \
   --algo 3 --augment_prob 0.5 --skip_bad_samples \
-  --wandb_mode disabled \
+  --wandb_mode online \
+  --wandb_tags prosdd rhythm stage2 asvspoof2019 \
   --log_dir output/logs_stage2realfake_rhythm_crop
 ```
 
 - `--audio_seconds 4` 每次重新選 crop，邊界移至停頓，實際長度可能超過四秒；
   `--audio_seconds 0` 保留整句。Train／dev 都重新抽取 targets，只有 train 套用 RawBoost。
 - `--T_target` 預設不指定，保留實際 CNN frames；不會自動把四秒設成 200。
-- `--num_workers 0` 在主程序執行 CPU teacher；正數使用 `spawn` 與常駐 workers，
-  共用凍結的 teacher 權重，每次取樣仍重新推論。
+- `--num_workers 8` 使用 `spawn` 與常駐 CPU teacher workers，共用凍結的 teacher 權重，
+  每次取樣仍重新推論；設為 `0` 則在主程序執行。
 - `--max_batch_samples` 可設定 batch 補零後的 sample 預算，以整句長度作 crop 上界；
   單筆超出預算時獨立成批。預設 0 表示只依 `batch_size` 分批。
 - 聯合 loss 為 `alpha * cls_loss + beta * ssl_loss`，分類權重 `[0.1, 0.9]`。
@@ -256,12 +265,43 @@ OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 uv run --locked python main_stage2realfake_r
 初始化排除記為 epoch 0；各輪略過筆數只計當輪讀取失敗的樣本。
 Dev 成功讀取的資料必須同時包含 bonafide 與 spoof，才能計算 EER。
 
-獨立評估入口 `main__eval_rhythm.py` 與舊的整套 shell 腳本
-`train_rhythm.sh`／`train_rhythm_vad.sh` 仍暫停使用；請直接執行上述訓練入口，
-每輪已包含 dev 驗證。
+獨立評估入口為 `main__eval_rhythm.py`；`train_rhythm.sh` 會依序執行 Stage 2 訓練與
+eval 評估，`train_rhythm_vad.sh` 仍暫停使用。每輪訓練已包含 dev 驗證。
+訓練失敗時腳本立即結束，不執行 eval；評估失敗也會回傳非零狀態。
 
 與 baseline 訓練入口的八類流程差異及小型驗證結果，見
 [Stage 2 Rhythm 流程檢驗](docs/stage2-rhythm-flow-review.md)。
+
+### Rhythm 獨立評估
+
+`main__eval_rhythm.py` 從 checkpoint 同目錄的 `config.json` 還原模型、
+`rhythm_sources`、`audio_seconds` 與 `T_target`；也可用 `--config_path` 指定設定檔。
+支援目前訓練產生的 `pause_crop` 與 `full_utterance` 模式，包括非四秒裁切及指定
+frame 數。推論只需音訊與 duration CSV，不需要 speaker embeddings、prosody targets
+或 MPM／VAD teacher。Protocol 必須含 bonafide／spoof 標籤。
+
+```bash
+uv run --locked python main__eval_rhythm.py \
+  --list_path dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.eval.trl.txt \
+  --wav_dir dataset/ASVspoof2019/ASVspoof2019_LA_eval/flac \
+  --duration_csv dataset/ASVspoof2019/ASVspoof2019_LA_cache_csv/cache_ASVspoof2019.LA_eval.csv \
+  --model_path output/logs_stage2realfake_rhythm_crop/model_best.pth \
+  --save_scores_to output/eval_rhythm/asvspoof2019_la_eval.txt \
+  --save_metrics_to output/eval_rhythm/asvspoof2019_la_eval.metrics.json \
+  --batch_size 16 --max_batch_samples 640000 --num_workers 4 \
+  --seed 1234 --skip_bad_samples
+```
+
+- 裁切、短錄音置中補零、rhythm 統計及 padding masks 與訓練共用處理函式。
+  評估以 `seed` 和 utterance ID 固定裁切位置，不因 worker 數或 batch 排序改變；
+  訓練的 dev 每輪仍重新取樣，因此兩者的 EER 不一定相同。
+- 分數為 `bonafide logit - spoof logit`，越高越接近真實語音，與 Rhythm dev EER 一致。
+  `--save_metrics_to` 選用，可輸出 EER、Cllr、minDCF、actDCF；分數未經校準。
+- 同時輸出 `*.protocol.txt`（成功評分的 ID／標籤）及 `*.coverage.json`
+  （涵蓋率、排除 ID／原因與評估設定）。`--skip_bad_samples` 允許略過缺漏或損壞樣本；
+  指標只計算成功評分子集。全部失敗，或要求計算指標時僅剩一種類別，會回報錯誤。
+- `--max_batch_samples 0` 只依 batch size 分批；正數以整句／補零長度上界控制預算，
+  單筆超出預算時獨立成批。既有輸出檔不會覆寫，重跑時請使用新的輸出名稱。
 
 ### 使用 W&B 紀錄訓練
 
@@ -332,8 +372,8 @@ Stage 1、一般與 Rhythm Stage 2 的訓練及評估皆將完整模型放在第
 選擇顯卡，例如 `CUDA_VISIBLE_DEVICES=2` 使用實體 GPU 2。
 即使環境中有多張可見 GPU，也只會使用第一張。
 
-沒有可用 CUDA GPU（包含設為空字串或 `-1`）時，訓練使用 CPU；
-評估需要 CUDA，會回報錯誤。
+沒有可用 CUDA GPU（包含設為空字串或 `-1`）時，訓練與 Rhythm 獨立評估使用 CPU；
+一般評估入口 `main_eval.py` 仍需要 CUDA，否則會回報錯誤。
 
 例如，Stage 1 的完整命令範本（請替換資料路徑）：
 

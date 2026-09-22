@@ -189,7 +189,8 @@ def sec_to_sample(seconds: float, sr: int) -> int:
 
 
 def select_duration(record: dict[str, torch.Tensor], audio_duration: float,
-                    max_len: float = 4.0, sr: int = SAMPLING_RATE) -> tuple[torch.Tensor, float, float]:
+                    max_len: float = 4.0, sr: int = SAMPLING_RATE, *,
+                    rng: random.Random | None = None) -> tuple[torch.Tensor, float, float]:
     """description:
         依 word 之間的停頓選取音訊範圍，並產生對應的 duration 特徵。
 
@@ -199,6 +200,7 @@ def select_duration(record: dict[str, torch.Tensor], audio_duration: float,
             audio_duration: 原始音訊總長度（秒）。
             max_len: 選取音訊的目標長度（秒）；0 表示保留整段錄音。
             sr: 原始音訊取樣率，用於將停頓邊界對齊原始 sample。
+            rng: 選用的獨立亂數來源；省略時沿用訓練的全域亂數。
         output:
             tuple[torch.Tensor, float, float]: duration 特徵 [N, S * 3]（預設為 [N, 9]）、
                 選取區間的起始秒數與結束秒數；起訖時間皆相對於原始音訊。
@@ -238,7 +240,7 @@ def select_duration(record: dict[str, torch.Tensor], audio_duration: float,
             pauses.append((length, length))
 
         # 讓端點盡量接近隨機視窗；長度差異只用於打破平手。
-        wanted_start = random.randint(0, length - target)
+        wanted_start = (rng or random).randint(0, length - target)
         wanted_end = wanted_start + target
         best = (math.inf, math.inf)
         for i, (left, right) in enumerate(pauses):
@@ -267,6 +269,45 @@ def select_duration(record: dict[str, torch.Tensor], audio_duration: float,
         dim=-1
     )
     return features.flatten(1).float(), start, end
+
+
+def load_rhythm_audio(path, record, *, max_len=4.0, sr=SAMPLING_RATE, rng=None):
+    """依停頓選取音訊與 duration，短錄音置中補零；回傳 wav、rhythm、有效 sample 範圍。
+
+    path 為音檔，record 為 duration CSV 記錄；max_len 以秒表示，0 保留整句。
+    rng 可固定評估的裁切位置；輸出有效範圍不包含任何人工 padding。
+    """
+    info = sf.info(path)
+    rhythm, start, end = select_duration(record, info.duration, max_len, info.samplerate, rng=rng)
+    wav = load_audio(path, start, end, sr)
+    length = wav.numel()
+    if not length or not torch.isfinite(wav).all():
+        raise ValueError("Empty or nonfinite waveform")
+    if info.duration < max_len:
+        wav = pad(wav, round(max_len * sr))
+    left = (wav.numel() - length) // 2
+    return wav, rhythm, (left, left + length)
+
+
+def collate_rhythm_inputs(wavs, rhythms, valid_samples, *, T_target=None,
+                          conv_kernel=CONV_KERNEL, conv_stride=CONV_STRIDE):
+    """將音訊、duration 序列及有效 sample 範圍組成分類推論 kwargs。
+
+    T_target=None 使用批次實際 CNN frame 數，否則依指定 frame 數產生 mask。
+    回傳 wav、duration_features 與 acoustic／rhythm padding masks；True 表示 padding。
+    """
+    wav = pad_sequence(wavs, batch_first=True)
+    rhythm = pad_sequence(rhythms, batch_first=True, padding_value=-100)
+    stride, receptive = cnn_geometry(conv_kernel, conv_stride)
+    frames = frame_count(wav.size(1), stride, receptive) if T_target is None else T_target
+    starts = torch.arange(frames) * stride
+    bounds = torch.tensor(valid_samples)
+    lengths = torch.tensor([features.size(0) for features in rhythms])
+    return {
+        "wav": wav, "duration_features": rhythm,
+        "frame_padding_mask": (starts[None] < bounds[:, :1]) | (starts[None] + receptive > bounds[:, 1:]),
+        "rhythm_padding_mask": torch.arange(rhythm.size(1))[None] >= lengths[:, None],
+    }
 
 
 class ProSDDStage2RhythmDataset(_Stage2Dataset):
@@ -397,17 +438,9 @@ class ProSDDStage2RhythmDataset(_Stage2Dataset):
             spk_emb = self.spk2emb[spk_id_str]
 
             wav_path = Path(self.wav_dir) / (utt_id + self.audio_ext)
-            info = sf.info(wav_path)
-            duration_features, start, end = select_duration(
-                self.utt2duration[utt_id], info.duration,
-                max_len=self.max_len / self.sr, sr=info.samplerate,
+            wav, duration_features, (left, right) = load_rhythm_audio(
+                wav_path, self.utt2duration[utt_id], max_len=self.max_len / self.sr, sr=self.sr,
             )
-            wav = load_audio(wav_path, start, end, self.sr)
-            length = wav.numel()
-            if info.duration < self.max_len / self.sr:
-                wav = pad(wav, self.max_len)
-            left = (wav.numel() - length) // 2
-            right = left + length
             stride, receptive = cnn_geometry(self.conv_kernel, self.conv_stride)
             first_frame = ((left + stride - 1) // stride) * stride
             if first_frame + receptive > right:
@@ -459,23 +492,19 @@ def collate_stage2_rhythm(batch, *, T_target=None, conv_kernel=CONV_KERNEL,
     for audio, target, utt_id in zip(wavs, pross, utt_ids):
         expected = frame_count(audio.numel(), stride, receptive_field)
         assert target.size(0) == expected, f"{utt_id}: prosody must have {expected} CNN frames"
-    wav = pad_sequence(wavs, batch_first=True)
+    inputs = collate_rhythm_inputs(
+        wavs, rhythms, valid_samples, T_target=T_target, conv_kernel=conv_kernel, conv_stride=conv_stride,
+    )
     pros = pad_sequence(pross, batch_first=True)
-    rhythm = pad_sequence(rhythms, batch_first=True, padding_value=-100)
-    frames = frame_count(wav.size(1), stride, receptive_field) if T_target is None else T_target
+    frame_mask = inputs["frame_padding_mask"]
+    frames = frame_mask.size(1)
     pros = torch.nn.functional.pad(pros, (0, 0, 0, frames - pros.size(1)))
-    starts = torch.arange(frames) * stride
-    bounds = torch.tensor(valid_samples)
-    frame_mask = (starts[None] < bounds[:, :1]) | (starts[None] + receptive_field > bounds[:, 1:])
     pros = pros.masked_fill(frame_mask.unsqueeze(-1), 0.0)
-    lengths = torch.tensor([features.size(0) for features in rhythms])
     return {
-        "utt_ids": list(utt_ids), "wav": wav,
+        **inputs, "utt_ids": list(utt_ids),
         "spk_emb": torch.stack(spks), "prosody_emb": pros,
         "spk_ids": torch.tensor(spk_idxs, dtype=torch.long),
         "labels": torch.tensor(labels, dtype=torch.long),
-        "duration_features": rhythm, "frame_padding_mask": frame_mask,
-        "rhythm_padding_mask": torch.arange(rhythm.size(1))[None] >= lengths[:, None],
         "skipped_samples": skipped,
     }
 

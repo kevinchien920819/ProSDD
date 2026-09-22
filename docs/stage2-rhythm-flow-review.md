@@ -44,8 +44,11 @@ Teacher 在主程序載入一次並凍結，資料集共享該模型；多 worke
 
 ## 驗證結果
 
-- 全專案 109 項測試通過。
-- `main_stage2realfake_rhythm.py` 覆蓋率 96%、`data_utils_rhythm.py` 97%、
+- 全專案 125 項測試通過，其中獨立評估包含 17 項測試。
+- 本次獨立評估入口覆蓋率 92%、共用 `data_utils_rhythm.py` 97%，兩個模組合計 95%。
+  評估測試包含本機小型 Wav2Vec2 checkpoint 的真正 CLI 執行、CPU worker、分數與指標輸出，
+  以及裁切重現性、動態／指定 frame 數、排除樣本紀錄與輸出檔保護。
+- 訓練串接時，`main_stage2realfake_rhythm.py` 覆蓋率 96%、`data_utils_rhythm.py` 97%、
   `extract_Prosody_rhythm.py` 94%、`extract_full_prosody.py` 79%；四個模組合計 93%。
 - 端到端測試使用真實 Dataset、collate、Wav2Vec2、Rhythm 模型、optimizer 與檔案輸出；
   外部 pretrained 下載與 teacher 以小型替身取代。涵蓋 SSL backward、checkpoint 重載、
@@ -66,11 +69,17 @@ Teacher 在主程序載入一次並凍結，資料集共享該模型；多 worke
 ```bash
 uv run --locked python -m unittest discover -s tests
 uv run --locked python -m coverage run \
-  --source=main_stage2realfake_rhythm,data_utils_rhythm,extract_Prosody_rhythm,extract_full_prosody \
+  --source=main__eval_rhythm,main_stage2realfake_rhythm,data_utils_rhythm,extract_Prosody_rhythm,extract_full_prosody \
   -m unittest discover -s tests
 uv run --locked python -m coverage report --fail-under=70
 ```
 
-獨立 eval 入口及舊的整套 shell 腳本仍暫停使用。完整訓練透過
-`main_stage2realfake_rhythm.py` 直接執行，每輪包含 dev 驗證。
+獨立 eval 入口 `main__eval_rhythm.py` 已串接相同的停頓裁切、音訊與 rhythm padding，
+由訓練設定還原音訊模式與 frame 數，只執行分類推論。每個 ID 的裁切由 seed 固定，
+不需要 SSL targets。輸出分數、成功評分 protocol、coverage 與選用的 CM 指標；
+用法見 [Rhythm 獨立評估](../README.md#rhythm-獨立評估)。完整訓練可直接執行
+`main_stage2realfake_rhythm.py`，或執行 `bash train_rhythm.sh` 使用標準 ASVspoof2019
+LA 設定；兩者每輪都包含 dev 驗證。
+`train_rhythm.sh` 訓練成功後，會用同一輸出目錄的 `model_best.pth` 與 `config.json`
+評估 ASVspoof2019 LA eval，評估產物存於該目錄的 `eval/`；任一步驟失敗即結束腳本。
 Checkpoint 保存 `state_dict`，沿用 baseline 格式，不包含 optimizer 續訓狀態。
