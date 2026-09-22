@@ -21,7 +21,7 @@ from data_utils_stage2realfake import (
 from main_eval import main as evaluate
 from model_stage1real import ProSDDStage1
 from model_stage2realfake import ProSDDStage2
-from test_multi_gpu import tiny_backbone
+from model_fixtures import tiny_backbone
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -122,7 +122,7 @@ class ProsodyDimensionTests(unittest.TestCase):
             argv += ["--audio_seconds", str(audio_seconds)]
         script = ROOT / ("main_stage1real.py" if stage == 1 else "main_stage2realfake.py")
         with patch.object(sys, "argv", argv), \
-                patch("multi_gpu.resolve_devices", return_value=[torch.device("cpu")]), \
+                patch("utils.resolve_device", return_value=torch.device("cpu")), \
                 patch("transformers.Wav2Vec2Model.from_pretrained", side_effect=tiny_backbone), \
                 patch("wandb.init") as init:
             result = runpy.run_path(str(script), run_name="__main__")
@@ -189,7 +189,7 @@ class ProsodyDimensionTests(unittest.TestCase):
                     list_path="unused", wav_dir="unused", batch_size=1, classifier_pool="mean",
                     model_path=str(checkpoint), save_scores_to=str(self.directory / "scores.txt"),
                 )
-                with patch("main_eval.resolve_devices", return_value=[torch.device("cpu")]), \
+                with patch("main_eval.resolve_device", return_value=torch.device("cpu")), \
                         patch("main_eval.ProSDDEvalDataset"), \
                         patch("main_eval.DataLoader", return_value=[(torch.randn(1, 31), ["utt"])]):
                     evaluate(args)
@@ -209,7 +209,7 @@ class ProsodyDimensionTests(unittest.TestCase):
                 model_path=str(checkpoint), save_scores_to=str(self.directory / "scores.txt"),
                 save_metrics_to=str(metrics_path),
             )
-            with patch("main_eval.resolve_devices", return_value=[torch.device("cpu")]), \
+            with patch("main_eval.resolve_device", return_value=torch.device("cpu")), \
                     patch("main_eval.ProSDDEvalDataset"), \
                     patch("main_eval.DataLoader", return_value=[(torch.randn(2, 31), ["bona", "spoof"])]), \
                     patch("main_eval.inference_forward", return_value=torch.tensor([[50.0, 1.0], [50.0, -1.0]])):

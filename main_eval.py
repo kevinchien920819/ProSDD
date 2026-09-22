@@ -1,6 +1,5 @@
 import os
 import argparse
-from multi_gpu import resolve_devices, place_model
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -10,6 +9,7 @@ from model_stage2realfake import ProSDDStage2
 from data_utils_eval import ProSDDEvalDataset
 from prosody_utils import infer_checkpoint_prosody_dim
 from evaluation_metric.prosdd import evaluate_score_file, load_protocol_labels, print_metrics
+from utils import resolve_device
 
 @torch.no_grad()
 def inference_forward(model, wav):
@@ -53,9 +53,8 @@ def main(args):
         # Validate labels before running expensive inference.
         load_protocol_labels(metrics_protocol)
 
-    devices = resolve_devices(require_cuda=True)
-    device = devices[0]
-    print(f"Model devices: {devices}", flush=True)
+    device = resolve_device(require_cuda=True)
+    print(f"Using device: {device}", flush=True)
     dataset = ProSDDEvalDataset(args.list_path, args.wav_dir)
     loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=4, pin_memory=True)
     print(f"Loading: {args.model_path}")
@@ -72,7 +71,7 @@ def main(args):
         prosody_dim=prosody_dim,
     )
     model.load_state_dict(new_state, strict=False)
-    place_model(model, devices)
+    model.to(device)
     model.eval()
 
     # Output File

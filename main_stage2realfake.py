@@ -2,7 +2,6 @@ import os
 import math
 import torch
 import argparse
-from multi_gpu import resolve_devices, place_model
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 import wandb
@@ -15,7 +14,7 @@ from data_utils_stage2realfake import (
     collate_stage2,
     SAMPLING_RATE,
 )
-from utils import set_random_seed
+from utils import resolve_device, set_random_seed
 
 
 def train_epoch(loader, model, optimizer, device, epoch, freeze_epochs, alpha, beta, criterion_cls):
@@ -230,9 +229,7 @@ if __name__ == "__main__":
     args.target_samples = target_samples
     set_random_seed(args.seed)
 
-    devices = resolve_devices()
-    device = devices[0]
-    print(f"Model devices: {devices}", flush=True)
+    device = resolve_device()
     print(f"Using device: {device}", flush=True)
     print(
         f"Audio: sr={SAMPLING_RATE}, seconds={args.audio_seconds}, "
@@ -316,7 +313,7 @@ if __name__ == "__main__":
         T_target=args.T_target,
         classifier_pool=args.classifier_pool,
     )
-    place_model(model, devices)
+    model.to(device)
 
     # param groups
     ssl_backbone_params, ssl_head_params, cls_params = [], [], []

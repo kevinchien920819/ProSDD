@@ -1,6 +1,5 @@
 import os
 import argparse
-from multi_gpu import resolve_devices, place_model
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -8,7 +7,7 @@ import wandb
 
 from model_stage1real import ProSDDStage1
 from data_utils_stage1real import ProSDDStage1Dataset
-from utils import set_random_seed
+from utils import resolve_device, set_random_seed
 
 def train_epoch(loader, model, optimizer, device):
     model.train()
@@ -82,9 +81,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     set_random_seed(args.seed)
 
-    devices = resolve_devices()
-    device = devices[0]
-    print(f"Model devices: {devices}", flush=True)
+    device = resolve_device()
     print(f"Using device: {device}", flush=True)
 
     # datasets
@@ -132,7 +129,7 @@ if __name__ == "__main__":
         mask_span_len=args.mask_span_len,
         tau=args.tau,
     )
-    place_model(model, devices)
+    model.to(device)
 
     # collect parameters for separate LRs
     ssl_param_names = []
