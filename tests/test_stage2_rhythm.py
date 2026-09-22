@@ -9,13 +9,12 @@ from torch.nn import functional as F
 
 from model_stage1real import ProSDDStage1
 from model_stage2realfake_rhythm import ProSDDStage2Rhythm
-from multi_gpu import place_model
-from test_multi_gpu import tiny_backbone
+from model_fixtures import tiny_backbone
 
 
 def build_model(**kwargs):
     options = dict(
-        T_target=16, d_model=8, nhead=2, n_rhythm_encoder_layers=1,
+        T_target=16, nhead=2, n_rhythm_encoder_layers=1,
         n_cls_encoder_layers=2, dropout=0.0, max_position_embeddings=32,
         mask_prob=0.4, mask_span_len=2, num_time_neg=3, num_spk_neg=2,
     )
@@ -40,6 +39,21 @@ class Stage2RhythmTests(unittest.TestCase):
     def setUp(self):
         torch.manual_seed(71)
 
+    def test_fused_features_feed_the_requested_backbone_width_classifier(self):
+        model = build_model(num_classes=3).eval()
+        out = model(**inputs(model))
+
+        self.assertEqual(out["feature"].shape, (3, model.hidden_dim))
+        self.assertIsInstance(model.cls_head, nn.Sequential)
+        self.assertEqual([type(layer) for layer in model.cls_head],
+                         [nn.Linear, nn.ReLU, nn.Dropout, nn.Linear])
+        self.assertEqual((model.cls_head[0].in_features, model.cls_head[0].out_features),
+                         (model.hidden_dim, 512))
+        self.assertTrue(model.cls_head[1].inplace)
+        self.assertEqual(model.cls_head[2].p, 0.1)
+        self.assertEqual((model.cls_head[3].in_features, model.cls_head[3].out_features), (512, 3))
+        torch.testing.assert_close(out["logits"], model.cls_head(out["feature"]))
+
     def test_two_passes_share_one_backbone_and_keep_both_gradient_paths(self):
         model = build_model()
         batch = inputs(model)
@@ -57,7 +71,6 @@ class Stage2RhythmTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(out["logits"].shape, (3, 2))
         self.assertEqual(out["feature"].shape, (3, 8))
-        self.assertIsInstance(model.cls_head.classifier, nn.Linear)
         for _, valid in calls:
             self.assertTrue(valid[:, :15].all())
             self.assertFalse(valid[:, 15:].any())
@@ -71,8 +84,8 @@ class Stage2RhythmTests(unittest.TestCase):
             model.ssl.feature_extractor.conv_layers[0].conv.weight,
             model.ssl.encoder.layers[0].attention.q_proj.weight,
             model.final_proj.weight,
-            model.cls_head.rhythm_embedding[0].weight,
-            model.cls_head.classifier.weight,
+            model.rhythm_fusion.rhythm_embedding[0].weight,
+            model.cls_head[-1].weight,
         )
         cls_grads = torch.autograd.grad(cls_loss, params, retain_graph=True, allow_unused=True)
         ssl_grads = torch.autograd.grad(out["ssl_loss"], params, retain_graph=True, allow_unused=True)
@@ -222,11 +235,10 @@ class Stage2RhythmTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Prosody dim mismatch"):
                     build_model(prosody_dim=256 if dim == 128 else 128, stage1_ckpt=str(path))
 
-    def test_model_checkpoint_round_trip_and_layer_placement_preserve_outputs(self):
+    def test_model_checkpoint_round_trip_preserves_outputs(self):
         model = build_model().eval()
         restored = build_model().eval()
         restored.load_state_dict(model.state_dict(), strict=True)
-        place_model(restored, [torch.device("cpu"), torch.device("cpu:0")])
         batch = inputs(model)
         torch.manual_seed(31)
         original = model(**batch)

@@ -1,8 +1,8 @@
-"""ProSDD Stage II with masked SSL and clean Rhythm duration classification.
+"""以 ProSDD Stage II 為基底，將 rhythm 與 clean 聲學特徵融合後分類。
 
-The two passes share ``ssl``. The classification head follows
-RhythmTransformerWithDuration, with a single final Linear instead of its MLP.
-No modules or checkpoints from the rhythm-transformer repository are imported.
+masked／clean 兩個 pass 共用 SSL backbone。RhythmTransformer 的 embedding、
+encoder 與 decoder 全程使用 backbone hidden_dim，取融合後的 rhythm CLS，
+接回範本的 hidden_dim → 512 → num_classes 分類器。
 
 Training::
 
@@ -57,11 +57,16 @@ class _PositionalEncoding(nn.Module):
         return x * self.scale + pe.to(dtype=x.dtype)
 
 
-class RhythmFusionHead(nn.Module):
-    """Encode duration tokens and let them query clean acoustic frame tokens."""
+class RhythmFusion(nn.Module):
+    """以 rhythm tokens 查詢 clean 聲學序列，輸出 utterance CLS 特徵。
+
+    輸入為聲學 [B, T, H]、duration [B, N, F] 與各自的 padding mask；
+    H 使用 backbone hidden_dim，F 為每種 rhythm source 的三個統計值。
+    輸出為 [B, H]，分類器由 ProSDDStage2Rhythm 單獨管理。
+    """
 
     def __init__(
-        self, hidden_dim: int, d_model: int, num_classes: int,
+        self, hidden_dim: int,
         rhythm_sources: Sequence[str], nhead: int,
         n_rhythm_encoder_layers: int, n_cls_encoder_layers: int,
         dropout: float, max_position_embeddings: int,
@@ -71,34 +76,30 @@ class RhythmFusionHead(nn.Module):
             f"{source}_{suffix}" for source in rhythm_sources
             for suffix in ("d", "devi", "mu_diff")
         )
-        self.ssl_proj = nn.Linear(hidden_dim, d_model)
         self.rhythm_embedding = nn.Sequential(
-            nn.Linear(len(self.feature_names), d_model),
-            _PositionalEncoding(d_model, max_position_embeddings),
-            nn.LayerNorm(d_model, eps=1e-12),
+            nn.Linear(len(self.feature_names), hidden_dim),
+            _PositionalEncoding(hidden_dim, max_position_embeddings),
+            nn.LayerNorm(hidden_dim, eps=1e-12),
             nn.Dropout(dropout),
         )
         self.rhythm_encoder = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
-                d_model, nhead, dim_feedforward=4 * d_model, dropout=dropout,
+                hidden_dim, nhead, dim_feedforward=4 * hidden_dim, dropout=dropout,
                 activation="gelu", batch_first=True,
             ),
             num_layers=n_rhythm_encoder_layers,
             enable_nested_tensor=False,
         )
-        self.cls_encoder = nn.TransformerDecoder(
+        self.decoder = nn.TransformerDecoder(
             nn.TransformerDecoderLayer(
-                d_model, nhead, dim_feedforward=4 * d_model, dropout=dropout,
+                hidden_dim, nhead, dim_feedforward=4 * hidden_dim, dropout=dropout,
                 activation="gelu", batch_first=True,
             ),
             num_layers=n_cls_encoder_layers,
         )
-        self.pos = _PositionalEncoding(d_model, max_position_embeddings)
-        self.layernorm = nn.LayerNorm(d_model, eps=1e-12)
+        self.pos = _PositionalEncoding(hidden_dim, max_position_embeddings)
+        self.layernorm = nn.LayerNorm(hidden_dim, eps=1e-12)
         self.dropout = nn.Dropout(dropout)
-        self.classifier = nn.Linear(d_model, num_classes)
-        nn.init.xavier_uniform_(self.classifier.weight)
-        nn.init.zeros_(self.classifier.bias)
 
     def _duration_inputs(self, features, padding_mask, frames):
         if isinstance(features, Mapping):
@@ -131,10 +132,11 @@ class RhythmFusionHead(nn.Module):
         return features.masked_fill(padding_mask.unsqueeze(-1), 0.0), padding_mask
 
     def forward(self, frames, duration_features, frame_padding_mask, rhythm_padding_mask=None):
+        """融合兩種不同長度的序列；mask 的 True 表示人工 padding。"""
         duration, rhythm_padding_mask = self._duration_inputs(
             duration_features, rhythm_padding_mask, frames,
         )
-        memory = self.ssl_proj(frames)
+        memory = frames.masked_fill(frame_padding_mask.unsqueeze(-1), 0.0)
         # Match RhythmTransformerWithDuration: a zero acoustic CLS before PE,
         # and a zero rhythm CLS after duration embedding/PE.
         cls = memory.new_zeros(memory.size(0), 1, memory.size(2))
@@ -145,13 +147,12 @@ class RhythmFusionHead(nn.Module):
         memory_padding = torch.cat([cls_padding, frame_padding_mask], dim=1)
         rhythm_padding = torch.cat([cls_padding, rhythm_padding_mask], dim=1)
         rhythm = self.rhythm_encoder(rhythm, src_key_padding_mask=rhythm_padding)
-        fused = self.cls_encoder(
+        fused = self.decoder(
             tgt=rhythm, memory=memory,
             tgt_key_padding_mask=rhythm_padding,
             memory_key_padding_mask=memory_padding,
         )
-        feature = self.layernorm(fused[:, 0, :])
-        return self.classifier(feature), feature
+        return self.layernorm(fused[:, 0, :])
 
 
 class ProSDDStage2Rhythm(ProSDDStage2):
@@ -170,7 +171,7 @@ class ProSDDStage2Rhythm(ProSDDStage2):
         Padding already present inside wav must be identified by the caller.
       * rhythm_padding_mask: optional boolean [B, N], overriding the sentinel.
 
-    Returns logits [B, num_classes], feature [B, d_model], and scalar ssl_loss,
+    Returns logits [B, num_classes], feature [B, hidden_dim], and scalar ssl_loss,
     spk_cos, pros_cos. The three SSL values are None if compute_ssl=False.
     Callers compute classification loss and combine it with ssl_loss. eval()
     alone does not disable the masked pass, so validation can measure both losses.
@@ -179,9 +180,9 @@ class ProSDDStage2Rhythm(ProSDDStage2):
     def __init__(
         self,
         model_name: str = "facebook/wav2vec2-xls-r-300m",
-        mask_prob: float = 0.15,
+        mask_prob: float = 0.25,
         mask_span_len: int = 8,
-        tau: float = 0.1,
+        tau: float = 0.07,
         num_classes: int = 2,
         stage1_ckpt: Optional[str] = None,
         num_time_neg: int = 50,
@@ -189,7 +190,6 @@ class ProSDDStage2Rhythm(ProSDDStage2):
         T_target: Optional[int] = None,
         prosody_dim: int = 128,
         *,
-        d_model: int = 256,
         rhythm_sources: Sequence[str] = ("syllable", "vowel", "consonant"),
         nhead: int = 4,
         n_rhythm_encoder_layers: int = 2,
@@ -202,8 +202,6 @@ class ProSDDStage2Rhythm(ProSDDStage2):
             s not in ("syllable", "vowel", "consonant") for s in sources
         ):
             raise ValueError("rhythm_sources must select unique syllable/vowel/consonant sources")
-        if d_model < 1 or nhead < 1 or d_model % nhead:
-            raise ValueError("d_model must be positive and divisible by nhead")
         if min(n_rhythm_encoder_layers, n_cls_encoder_layers) < 1 or (T_target is not None and T_target < 1):
             raise ValueError("Encoder/decoder layer counts and T_target must be positive")
         if max_position_embeddings < (T_target + 1 if T_target is not None else 1):
@@ -218,15 +216,14 @@ class ProSDDStage2Rhythm(ProSDDStage2):
             num_spk_neg=num_spk_neg, T_target=T_target or 200, prosody_dim=prosody_dim,
         )
         self.T_target = T_target
-        # Replacing the parent's small MLP keeps every classifier parameter under
-        # cls_head, compatible with the existing optimizer/freezing convention.
         self.classifier_pool = "rhythm"
-        self.cls_head = RhythmFusionHead(
-            self.hidden_dim, d_model, num_classes, sources, nhead,
+        # 沿用範本的 cls_head；rhythm/fusion 使用獨立的 learning rate。
+        self.rhythm_fusion = RhythmFusion(
+            self.hidden_dim, sources, nhead,
             n_rhythm_encoder_layers, n_cls_encoder_layers, dropout,
             max_position_embeddings,
         )
-        self.duration_feature_names = self.cls_head.feature_names
+        self.duration_feature_names = self.rhythm_fusion.feature_names
         if stage1_ckpt is not None:
             self.load_stage1(stage1_ckpt)
 
@@ -352,6 +349,17 @@ class ProSDDStage2Rhythm(ProSDDStage2):
         duration_features=None, *, frame_padding_mask=None,
         rhythm_padding_mask=None, compute_ssl: bool = True,
     ):
+        """由音訊與 rhythm 計算分類 logits，以及可選的 masked SSL loss。
+
+        輸入 wav [B, L]、duration_features [B, N, 3 * sources]；
+        frame_padding_mask [B, T] 與 rhythm_padding_mask [B, N] 的 True
+        表示人工 padding。SSL encoder 使用反向的有效 frame mask，不接收 length。
+        compute_ssl=True 時還需 spk_emb [B, 192]、prosody_emb [B, T, D]
+        與 spk_ids [B]，各資料須對應同一音訊區間。
+
+        回傳 logits [B, num_classes]、feature [B, hidden_dim]、ssl_loss、
+        spk_cos 與 pros_cos；略過 SSL 時，後三項為 None。
+        """
         if duration_features is None:
             raise ValueError("duration_features is required for rhythm classification")
         if compute_ssl and any(x is None for x in (spk_emb, prosody_emb, spk_ids)):
@@ -394,9 +402,10 @@ class ProSDDStage2Rhythm(ProSDDStage2):
             z.clone(), attention_mask=valid,
             output_hidden_states=False, return_dict=True,
         ).last_hidden_state
-        logits, feature = self.cls_head(
+        feature = self.rhythm_fusion(
             ctx_clean, duration_features, padding, rhythm_padding_mask,
         )
+        logits = self.cls_head(feature)
         return {
             "logits": logits, "feature": feature, "ssl_loss": ssl_loss,
             "spk_cos": spk_cos, "pros_cos": pros_cos,

@@ -22,6 +22,21 @@ from data_utils_stage2realfake import _load_audio_with_ffmpeg
 from full_utterance import cnn_geometry, frame_count
 
 
+def load_prosody_teacher(kind="mpm", checkpoint=None):
+    """載入 CPU 推論用 teacher；kind 選 mpm／vad，checkpoint 為模型位置。"""
+    if kind == "vad":
+        if checkpoint is None:
+            raise ValueError("VAD teacher requires a checkpoint")
+        from mask_prosody_model.masked_prosody_model_vad import MaskedProsodyModelVAD
+        model = MaskedProsodyModelVAD.from_pretrained(checkpoint)
+    elif kind == "mpm":
+        from masked_prosody_model import MaskedProsodyModel
+        model = MaskedProsodyModel.from_pretrained(checkpoint or "cdminix/masked_prosody_model")
+    else:
+        raise ValueError("teacher kind must be mpm or vad")
+    return model.cpu().eval()
+
+
 def load_full_audio(path):
     try:
         wav, sr = torchaudio.load(str(path))
@@ -36,7 +51,12 @@ def load_full_audio(path):
 
 
 @torch.inference_mode()
-def extract_aligned_targets(model, wav, conv_kernel, conv_stride, *, layer=7):
+def extract_aligned_targets(model, wav, conv_kernel, conv_stride, *, layer=7, sr=16000):
+    """以 teacher 抽取 wav [L]，回傳依 CNN 時間中心對齊的 float32 [T, D]。
+
+    sr 是 wav 取樣率，layer 是 teacher 輸出層；conv_kernel／conv_stride
+    定義學生的 frame 格點。六秒分窗涵蓋整段輸入，不再裁選片段。
+    """
     stride, receptive = cnn_geometry(conv_kernel, conv_stride)
     count = frame_count(wav.numel(), stride, receptive)
     if not count:
@@ -44,26 +64,26 @@ def extract_aligned_targets(model, wav, conv_kernel, conv_stride, *, layer=7):
     measure = model.vad_measure
     teacher_step = measure.hop_length / measure.sampling_rate
     times, representations = [], []
-    window_samples = 6 * 16000
+    window_samples = 6 * sr
     for start in range(0, wav.numel(), window_samples):
         window = wav[start:start + window_samples].cpu().numpy()
         # Pad only extremely short final teacher windows for the pitch estimator.
         # No fabricated samples are retained in the timestamp-aligned targets.
-        teacher_window = np.pad(window, (0, max(0, 1600 - len(window))))
+        teacher_window = np.pad(window, (0, max(0, round(0.1 * sr) - len(window))))
         with tempfile.NamedTemporaryFile(suffix=".wav") as file:
-            sf.write(file.name, teacher_window, 16000, subtype="FLOAT")
+            sf.write(file.name, teacher_window, sr, subtype="FLOAT")
             rep = torch.as_tensor(model.process_audio(file.name, layer=layer)).detach().cpu().numpy()
         if rep.ndim != 2 or not len(rep) or not np.isfinite(rep).all():
             raise ValueError("Teacher returned invalid full-utterance representations")
         local_times = np.arange(len(rep), dtype=np.float64) * teacher_step
-        keep = local_times <= len(window) / 16000
-        times.append(local_times[keep] + start / 16000)
+        keep = local_times <= len(window) / sr
+        times.append(local_times[keep] + start / sr)
         representations.append(rep[keep])
     times = np.concatenate(times)
     representations = np.concatenate(representations)
     unique = np.r_[True, np.diff(times) > 1e-9]
     times, representations = times[unique], representations[unique]
-    target_times = (np.arange(count) * stride + (receptive - 1) / 2) / 16000
+    target_times = (np.arange(count) * stride + (receptive - 1) / 2) / sr
     aligned = np.stack([
         np.interp(target_times, times, representations[:, column])
         for column in range(representations.shape[1])
@@ -91,13 +111,7 @@ def main(argv=None):
     if output.exists() or metadata_path.exists():
         parser.error("Output or metadata already exists; choose a new full-utterance cache path")
     checkpoint = args.teacher_checkpoint or "cdminix/masked_prosody_model"
-    if args.teacher_kind == "vad":
-        from mask_prosody_model.masked_prosody_model_vad import MaskedProsodyModelVAD
-        model = MaskedProsodyModelVAD.from_pretrained(checkpoint)
-    else:
-        from masked_prosody_model import MaskedProsodyModel
-        model = MaskedProsodyModel.from_pretrained(checkpoint)
-    model = model.cpu().eval()
+    model = load_prosody_teacher(args.teacher_kind, checkpoint)
     config = AutoConfig.from_pretrained(args.model_name)
     ids = []
     with open(args.protocol_txt, encoding="utf-8-sig") as file:

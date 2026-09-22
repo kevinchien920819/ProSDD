@@ -99,6 +99,8 @@ def _load_audio_with_ffmpeg(path: str, target_sr: int) -> Tuple[torch.Tensor, in
     return wav, sr
 
 def padr(wav: torch.Tensor, max_len: int = TARGET_SAMPLES) -> torch.Tensor:
+    if max_len is None or max_len == 0:
+        return wav
     n = wav.numel()
     if n >= max_len:
         return wav[:max_len]
@@ -107,6 +109,9 @@ def padr(wav: torch.Tensor, max_len: int = TARGET_SAMPLES) -> torch.Tensor:
     return padded_wav[:max_len]
 
 def pad(wav: torch.Tensor, max_len: int = TARGET_SAMPLES) -> torch.Tensor:
+    """置中裁切或補零；max_len 為 0／None 時保留完整音訊。"""
+    if max_len is None or max_len == 0:
+        return wav
     n = wav.numel()
     if n >= max_len:
         s = (n - max_len) // 2
@@ -187,7 +192,7 @@ class ProSDDStage2Dataset(Dataset):
         labels: List[int],
         wav_dir: str,
         spkmean_txt: str,      # spk_id_str -> 192
-        prosody_txt: str,      # utt_id -> (T,D)
+        prosody_txt: Optional[str],  # None 供子類別即時抽取 targets。
         sr: int = SAMPLING_RATE,
         max_len: int = TARGET_SAMPLES,
         audio_ext: str = ".flac",
@@ -209,8 +214,9 @@ class ProSDDStage2Dataset(Dataset):
         uniq_spk = sorted(set(self.spk_ids))
         self.spk2idx = {s: i for i, s in enumerate(uniq_spk)}
         self.spk2emb = load_spk_mean_embeddings(spkmean_txt, skip_bad_entries=skip_bad_entries)
-        self.utt2pros = load_prosody_dict(prosody_txt, prosody_dim, skip_bad_entries=skip_bad_entries)
-        self.prosody_dim = self.utt2pros.prosody_dim
+        self.utt2pros = (load_prosody_dict(prosody_txt, prosody_dim, skip_bad_entries=skip_bad_entries)
+                         if prosody_txt is not None else {})
+        self.prosody_dim = self.utt2pros.prosody_dim if prosody_txt is not None else prosody_dim
         self.augment_fn = augment_fn
         self.augment_algo = int(augment_algo)
         self.augment_prob = float(augment_prob)

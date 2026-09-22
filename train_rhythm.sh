@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# 暫停執行；下方保留既有命令，待新版資料介面完成後再調整。
+printf '%s\n' 'Rhythm pipeline 暫停使用：舊資料流程已移除，待 data_utils_rhythm.py 完成串接。' >&2
+exit 1
+
 # ProSDD + Rhythm pipeline
 #   Step 0: extract frame-level prosody embeddings (MPM, CPU) for 4 sets
 #   Step 1: Stage 1 contrastive pre-training on bonafide speech (LibriSpeech)
@@ -90,13 +94,13 @@ uv run --locked python main_stage2realfake_rhythm.py \
   --stage1_ckpt output/logs_stage1contrastived/model_epoch_50.pth \
   --audio_ext .flac \
   --epochs 50 --batch_size 8 --max_batch_samples 0 --num_workers 8 \
-  --lr_ssl_backbone 1e-6 --lr_ssl_head 1e-4 --lr_cls 1e-5 \
+  --lr_ssl_backbone 1e-6 --lr_ssl_head 1e-4 --lr_rhythm 1e-5 --lr_cls 1e-5 \
   --weight_decay 1e-4 \
   --alpha 1.0 \
   --mask_prob 0.15 --mask_span_len 8 --tau 0.1 \
   --num_time_neg 50 --num_spk_neg 50 \
   --rhythm_sources syllable \
-  --d_model 256 --nhead 4 --n_rhythm_encoder_layers 2 --n_cls_encoder_layers 4 \
+  --nhead 4 --n_rhythm_encoder_layers 2 --n_cls_encoder_layers 4 \
   --dropout 0.1 --max_position_embeddings 5000 \
   --algo 3 --augment_prob 0.5 \
   --wandb_tags prosdd rhythm stage2 full-utterance asvspoof2019 \
