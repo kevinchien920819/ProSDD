@@ -9,21 +9,23 @@ from model_stage1real import ProSDDStage1
 from data_utils_stage1real import ProSDDStage1Dataset
 from utils import resolve_device, set_random_seed
 
+
+def _batch_loss(batch, model, device):
+    """將含可選 gender 的 batch 移至 device，回傳模型 loss 與 batch size。"""
+    inputs = [tensor.to(device) for tensor in batch]
+    return model(*inputs), inputs[0].size(0)
+
+
 def train_epoch(loader, model, optimizer, device):
     model.train()
     total_loss = 0.0
     total = 0
 
-    for wav, spk_emb, prosody_emb, spk_ids in tqdm(loader, desc="Training", leave=False):
-        wav = wav.to(device)
-        spk_emb = spk_emb.to(device)
-        prosody_emb = prosody_emb.to(device)
-        spk_ids = torch.as_tensor(spk_ids, device=device)
-        loss = model(wav, spk_emb, prosody_emb, spk_ids)
+    for batch in tqdm(loader, desc="Training", leave=False):
+        loss, bs = _batch_loss(batch, model, device)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        bs = wav.size(0)
         total_loss += loss.item() * bs
         total += bs
     return total_loss / max(total, 1)
@@ -34,13 +36,8 @@ def validate(loader, model, device):
     total_loss = 0.0
     total = 0
 
-    for wav, spk_emb, prosody_emb, spk_ids in tqdm(loader, desc="Validating", leave=False):
-        wav = wav.to(device)
-        spk_emb = spk_emb.to(device)
-        prosody_emb = prosody_emb.to(device)
-        spk_ids = torch.as_tensor(spk_ids, device=device)
-        loss = model(wav, spk_emb, prosody_emb, spk_ids)
-        bs = wav.size(0)
+    for batch in tqdm(loader, desc="Validating", leave=False):
+        loss, bs = _batch_loss(batch, model, device)
         total_loss += loss.item() * bs
         total += bs
     return total_loss / max(total, 1)
@@ -58,6 +55,11 @@ if __name__ == "__main__":
     parser.add_argument("--audio_ext", type=str, default=".flac")
     parser.add_argument("--prosody_dim", type=int, choices=[128, 256], default=None,
                         help="Prosody feature dimension; inferred from training data by default")
+    parser.add_argument("--use_gender", action="store_true",
+                        help="Concatenate rotated gender embeddings into the Stage 1 contrastive target")
+    parser.add_argument("--gender_txt", help="LibriSpeech SPEAKERS.TXT shared by train and dev")
+    parser.add_argument("--gender_theta", type=float, default=45.0,
+                        help="Fixed counterclockwise rotation in degrees; default 45")
 
     # -------- training --------
     parser.add_argument("--epochs", type=int, default=50)
@@ -71,6 +73,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_workers", type=int, default=0)
 
     # -------- ProSDD params --------
+    parser.add_argument("--model_name", default="facebook/wav2vec2-xls-r-300m",
+                        help="Pretrained Wav2Vec2 model ID or local directory")
     parser.add_argument("--mask_prob", type=float, default=0.25)
     parser.add_argument("--mask_span_len", type=int, default=8)
     parser.add_argument("--tau", type=float, default=0.07)
@@ -79,6 +83,8 @@ if __name__ == "__main__":
                         help="Optional W&B tags, for example: --wandb_tags prosdd stage1")
 
     args = parser.parse_args()
+    if args.use_gender and not args.gender_txt:
+        parser.error("--gender_txt is required when --use_gender is set")
     set_random_seed(args.seed)
 
     device = resolve_device()
@@ -91,6 +97,8 @@ if __name__ == "__main__":
         wav_dir=args.wav_dir_train,
         audio_ext=args.audio_ext,
         prosody_dim=args.prosody_dim,
+        gender_txt=args.gender_txt if args.use_gender else None,
+        gender_theta=args.gender_theta,
     )
     args.prosody_dim = train_dataset.prosody_dim
     print(f"Prosody dim: {args.prosody_dim}", flush=True)
@@ -101,6 +109,8 @@ if __name__ == "__main__":
         wav_dir=args.wav_dir_dev,
         audio_ext=args.audio_ext,
         prosody_dim=args.prosody_dim,
+        gender_txt=args.gender_txt if args.use_gender else None,
+        gender_theta=args.gender_theta,
     )
 
     print(f"Train samples: {len(train_dataset)}", flush=True)
@@ -124,12 +134,16 @@ if __name__ == "__main__":
 
     # model
     model = ProSDDStage1(
+        model_name=args.model_name,
         prosody_dim=args.prosody_dim,
         mask_prob=args.mask_prob,
         mask_span_len=args.mask_span_len,
         tau=args.tau,
+        use_gender=args.use_gender,
     )
     model.to(device)
+    print(f"Target dim: {model.out_dim} | Gender dim: {model.gender_dim} | "
+          f"Gender theta: {args.gender_theta:g} deg", flush=True)
 
     # collect parameters for separate LRs
     ssl_param_names = []

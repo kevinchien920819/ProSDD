@@ -17,6 +17,12 @@ from data_utils_stage2realfake import (
 from utils import resolve_device, set_random_seed
 
 
+def _batch_forward(batch, model, device):
+    """將六項 batch 移至 device，回傳模型輸出與真假標籤。"""
+    wav, speaker, prosody, spk_ids, labels, gender = [value.to(device) for value in batch]
+    return model(wav, speaker, prosody, spk_ids, gender_emb=gender), labels
+
+
 def train_epoch(loader, model, optimizer, device, epoch, freeze_epochs, alpha, beta, criterion_cls):
     model.train()
 
@@ -41,14 +47,10 @@ def train_epoch(loader, model, optimizer, device, epoch, freeze_epochs, alpha, b
     total_spk_cos = total_pros_cos = 0.0
     total = 0
 
-    for wav, spk_emb, pros_emb, spk_ids, labels in tqdm(loader, desc=f"Training (epoch {epoch})", leave=False):
-        wav = wav.to(device)
-        spk_emb = spk_emb.to(device)
-        pros_emb = pros_emb.to(device)
-        spk_ids = spk_ids.to(device)
-        labels = labels.to(device)
-
-        out = model(wav, spk_emb, pros_emb, spk_ids)
+    for batch in tqdm(loader, desc=f"Training (epoch {epoch})", leave=False):
+        if batch is None:
+            continue
+        out, labels = _batch_forward(batch, model, device)
 
         ssl_loss = out["ssl_loss"]
         logits = out["logits"]
@@ -63,7 +65,7 @@ def train_epoch(loader, model, optimizer, device, epoch, freeze_epochs, alpha, b
         loss.backward()
         optimizer.step()
 
-        bs = wav.size(0)
+        bs = labels.size(0)
         total += bs
         total_loss += loss.item() * bs
         total_ssl += float(ssl_loss.item()) * bs
@@ -92,14 +94,10 @@ def validate(loader, model, device, alpha, beta, criterion_cls):
     tp0 = tp1 = 0
     n0 = n1 = 0
 
-    for wav, spk_emb, pros_emb, spk_ids, labels in tqdm(loader, desc="Validating", leave=False):
-        wav = wav.to(device)
-        spk_emb = spk_emb.to(device)
-        pros_emb = pros_emb.to(device)
-        spk_ids = spk_ids.to(device)
-        labels = labels.to(device)
-
-        out = model(wav, spk_emb, pros_emb, spk_ids)
+    for batch in tqdm(loader, desc="Validating", leave=False):
+        if batch is None:
+            continue
+        out, labels = _batch_forward(batch, model, device)
 
         ssl_loss = out["ssl_loss"]
         logits = out["logits"]
@@ -116,7 +114,7 @@ def validate(loader, model, device, alpha, beta, criterion_cls):
         tp0 += ((preds == 0) & mask0).sum().item()
         tp1 += ((preds == 1) & mask1).sum().item()
 
-        bs = wav.size(0)
+        bs = labels.size(0)
         total += bs
         total_loss += loss.item() * bs
         total_ssl += float(ssl_loss.item()) * bs
@@ -158,6 +156,10 @@ if __name__ == "__main__":
                         help="Prosody feature dimension; inferred from training data by default")
 
     parser.add_argument("--stage1_ckpt", type=str, default=None)
+    parser.add_argument("--use_gender", action="store_true", help="Supervise the full speaker/prosody/gender projection")
+    parser.add_argument("--gender_txt", help="Speaker ID | M/F metadata covering train and dev speakers")
+    parser.add_argument("--gender_theta", type=float, default=45.0, help="Fixed rotation in degrees; match Stage 1")
+    parser.add_argument("--model_name", default="facebook/wav2vec2-xls-r-300m")
 
     # -------- training --------
     parser.add_argument("--epochs", type=int, default=50)
@@ -213,6 +215,8 @@ if __name__ == "__main__":
     parser.add_argument("--audio_ext", type=str, default=".flac")
 
     args = parser.parse_args()
+    if args.use_gender and not args.gender_txt:
+        parser.error("--gender_txt is required when --use_gender is set")
     if args.audio_seconds <= 0:
         parser.error("--audio_seconds must be positive")
     target_samples = round(args.audio_seconds * SAMPLING_RATE)
@@ -257,6 +261,8 @@ if __name__ == "__main__":
         augment_prob=args.augment_prob,
         aug_args=args,
         prosody_dim=args.prosody_dim,
+        gender_txt=args.gender_txt if args.use_gender else None,
+        gender_theta=args.gender_theta,
     )
     args.prosody_dim = train_dataset.prosody_dim
     print(f"Prosody dim: {args.prosody_dim}", flush=True)
@@ -276,6 +282,8 @@ if __name__ == "__main__":
         augment_prob=0.0,
         aug_args=None,
         prosody_dim=args.prosody_dim,
+        gender_txt=args.gender_txt if args.use_gender else None,
+        gender_theta=args.gender_theta,
     )
 
     print(f"Train samples: {len(train_dataset)}", flush=True)
@@ -302,6 +310,8 @@ if __name__ == "__main__":
 
     # model
     model = ProSDDStage2(
+        model_name=args.model_name,
+        use_gender=args.use_gender,
         prosody_dim=args.prosody_dim,
         mask_prob=args.mask_prob,
         mask_span_len=args.mask_span_len,
@@ -314,6 +324,8 @@ if __name__ == "__main__":
         classifier_pool=args.classifier_pool,
     )
     model.to(device)
+    print(f"Target dim: {model.out_dim} | Gender dim: {model.gender_dim} | "
+          f"Gender theta: {args.gender_theta:g} deg", flush=True)
 
     # param groups
     ssl_backbone_params, ssl_head_params, cls_params = [], [], []

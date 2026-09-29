@@ -5,9 +5,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 # Import the model file you shared (ensure the filename matches on your server)
-from model_stage2realfake import ProSDDStage2
+from model_stage2realfake import ProSDDStage2, infer_checkpoint_dims
 from data_utils_eval import ProSDDEvalDataset
-from prosody_utils import infer_checkpoint_prosody_dim
 from evaluation_metric.prosdd import evaluate_score_file, load_protocol_labels, print_metrics
 from utils import resolve_device
 
@@ -43,6 +42,18 @@ def inference_forward(model, wav):
     logits = model.cls_head(pooled)
     return logits
 
+def load_model(model_path, *, model_name="facebook/wav2vec2-xls-r-300m", classifier_pool="mean"):
+    """由 checkpoint 維度還原完整 Stage 2，回傳不需 gender 輸入的 eval 模型。"""
+    state = torch.load(model_path, map_location="cpu", weights_only=True)
+    state = {key.removeprefix("module."): value for key, value in state.get("state_dict", state).items()}
+    prosody_dim, gender_dim = infer_checkpoint_dims(state)
+    model = ProSDDStage2(
+        model_name=model_name, classifier_pool=classifier_pool, T_target=200,
+        prosody_dim=prosody_dim, use_gender=bool(gender_dim),
+    )
+    model.load_state_dict(state, strict=True)
+    return model.eval()
+
 def main(args):
     metrics_path = getattr(args, "save_metrics_to", None)
     metrics_protocol = getattr(args, "metrics_protocol", None)
@@ -58,21 +69,9 @@ def main(args):
     dataset = ProSDDEvalDataset(args.list_path, args.wav_dir)
     loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=4, pin_memory=True)
     print(f"Loading: {args.model_path}")
-    state = torch.load(args.model_path, map_location="cpu")
-    if "state_dict" in state: state = state["state_dict"]
-    new_state = {}
-    for k, v in state.items():
-        new_state[k.replace("module.", "")] = v
-    prosody_dim = infer_checkpoint_prosody_dim(new_state)
-    print(f"Prosody dim: {prosody_dim}", flush=True)
-    model = ProSDDStage2(
-        classifier_pool=args.classifier_pool,
-        T_target=200,
-        prosody_dim=prosody_dim,
-    )
-    model.load_state_dict(new_state, strict=False)
+    model = load_model(args.model_path, model_name=args.model_name, classifier_pool=args.classifier_pool)
+    print(f"Prosody dim: {model.prosody_dim} | Gender dim: {model.gender_dim}", flush=True)
     model.to(device)
-    model.eval()
 
     # Output File
     os.makedirs(os.path.dirname(args.save_scores_to) or ".", exist_ok=True)
@@ -98,6 +97,7 @@ if __name__ == "__main__":
     parser.add_argument("--list_path", required=True)
     parser.add_argument("--wav_dir", required=True)
     parser.add_argument("--model_path", required=True)
+    parser.add_argument("--model_name", default="facebook/wav2vec2-xls-r-300m")
     parser.add_argument("--save_scores_to", required=True)
     parser.add_argument("--save_metrics_to", help="推論完成後計算 CM 指標並儲存 JSON")
     parser.add_argument("--metrics_protocol", help="指標標籤檔；預設使用 --list_path")

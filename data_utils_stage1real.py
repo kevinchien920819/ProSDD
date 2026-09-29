@@ -1,3 +1,4 @@
+import math
 import os
 import subprocess
 import tempfile
@@ -74,6 +75,37 @@ def load_spk_mean_embeddings(spk_txt: str) -> Dict[str, torch.Tensor]:
             spk2emb[spk] = vec
     return spk2emb
 
+
+def load_gender(gender_txt: str, theta: float) -> Dict[str, torch.Tensor]:
+    """讀取語者 gender 標註，回傳 R(theta) 旋轉後的 one-hot。
+
+    輸入:
+        gender_txt: 標註檔路徑（如 SPEAKERS.TXT），前兩欄為 speaker ID 與 M/F，以 | 分隔。
+            略過空行與以 ; 開頭的註解。
+        theta: 逆時針旋轉角度，單位為度；0 保留 one-hot，45 表示 45 度。
+    輸出:
+        speaker ID 字串對應 [2] float32 tensor 的字典。旋轉前 M=[1, 0]、
+        F=[0, 1]；每次都從原始 one-hot 計算，不累積先前的旋轉。
+    """
+    labels = {"M": 0, "F": 1}
+    one_hot = torch.eye(2, dtype=torch.float32)
+    theta = math.radians(theta)
+    cos, sin = math.cos(theta), math.sin(theta)
+    rotation = torch.tensor([[cos, -sin], [sin, cos]], dtype=torch.float32)
+    embeddings = one_hot @ rotation.T
+    gender2emb = {}
+    with open(gender_txt, encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, 1):
+            line = line.strip()
+            if not line or line.startswith(";"):
+                continue
+            spk, gender = (part.strip() for part in line.split("|")[:2])
+            if gender not in labels:
+                raise ValueError(f"{gender_txt}:{line_number}: unknown gender {gender!r}; expected M or F")
+            gender2emb[spk] = embeddings[labels[gender]].clone()
+    return gender2emb
+
+
 def load_vad_prosody_dict(
     prosody_txt: str, expected_dim: Optional[int] = None,
 ) -> ProsodyTextIndex:
@@ -81,6 +113,8 @@ def load_vad_prosody_dict(
 
 
 class ProSDDStage1Dataset(Dataset):
+    """回傳 wav、speaker、prosody、speaker ID、gender；未啟用 gender 時末項為空 tensor。"""
+
     def __init__(
         self,
         prosody_txt: str,
@@ -90,6 +124,8 @@ class ProSDDStage1Dataset(Dataset):
         max_len: int = 64000,
         audio_ext: str = ".flac",
         prosody_dim: Optional[int] = None,
+        gender_txt: Optional[str] = None,
+        gender_theta: float = 45.0,
     ):
         super().__init__()
 
@@ -101,6 +137,7 @@ class ProSDDStage1Dataset(Dataset):
         self.utt2pros = load_prosody_dict(prosody_txt, prosody_dim)   # uttID -> (T,D)
         self.prosody_dim = self.utt2pros.prosody_dim
         self.utt_ids = list(self.utt2pros.keys())
+        self.gender2emb = load_gender(gender_txt, gender_theta) if gender_txt is not None else None
 
     def __len__(self):
         return len(self.utt_ids)
@@ -119,4 +156,5 @@ class ProSDDStage1Dataset(Dataset):
         wav_path = os.path.join(self.wav_dir, utt_id + self.audio_ext)
         wav = load_audio(wav_path, self.sr, self.max_len)  # (max_len,)
 
-        return wav, spk_emb, prosody, spk_id
+        gender_emb = self.gender2emb[spk_str] if self.gender2emb is not None else torch.empty(0)
+        return wav, spk_emb, prosody, spk_id, gender_emb

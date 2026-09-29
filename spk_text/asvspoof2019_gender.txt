@@ -1,0 +1,51 @@
+; ASVspoof2019 LA train/dev gender metadata. Format: speaker_id | gender | VCTK speaker
+; ASVspoof-to-VCTK mapping (ODC-By):
+; https://www.asvspoof.org/asvspoof2019/ASVspoof2019_2021_VCTK_VCC_MetaInfo.tar.gz
+; VCTK gender labels: nii-yamagishilab/multi-speaker-tacotron, commit edd0c5999f0326857a51e89d30fae4ea54229e6f
+; https://github.com/nii-yamagishilab/multi-speaker-tacotron/tree/edd0c5999f0326857a51e89d30fae4ea54229e6f/selected_lists
+; Gender comes from vctk_selected_lists_M/F/{train,test,seen,validation}.csv.
+; Join protocol utterance IDs to ASVspoof_ID. Bonafide uses VCTK_ID's speaker;
+; spoof uses TTS_VC_target_speaker, never VC_source_VCTK_ID.
+; Every protocol speaker maps consistently to one VCTK speaker across all utterances.
+; Verified: train 25,380 utterances / 20 speakers; dev 24,844 / 20; each split 8 M, 12 F.
+; VCTK: Yamagishi, Veaux, MacDonald (2019), https://doi.org/10.7488/ds/2645
+LA_0069 | F | p335
+LA_0070 | M | p279
+LA_0071 | M | p258
+LA_0072 | F | p253
+LA_0073 | M | p251
+LA_0074 | F | p329
+LA_0075 | F | p262
+LA_0076 | M | p272
+LA_0077 | F | p336
+LA_0078 | F | p310
+LA_0079 | F | p323
+LA_0080 | F | p250
+LA_0081 | F | p314
+LA_0082 | M | p241
+LA_0083 | M | p243
+LA_0084 | F | p268
+LA_0085 | F | p244
+LA_0086 | F | p229
+LA_0087 | F | p267
+LA_0088 | F | p297
+LA_0089 | M | p255
+LA_0090 | F | p276
+LA_0091 | F | p305
+LA_0092 | M | p247
+LA_0093 | M | p311
+LA_0094 | M | p285
+LA_0095 | M | p270
+LA_0096 | M | p347
+LA_0097 | F | p306
+LA_0098 | F | p240
+LA_0099 | M | p254
+LA_0100 | M | p374
+LA_0101 | M | p364
+LA_0102 | F | p307
+LA_0103 | F | p257
+LA_0104 | F | p265
+LA_0105 | M | p345
+LA_0106 | F | p303
+LA_0107 | F | p330
+LA_0108 | F | p293

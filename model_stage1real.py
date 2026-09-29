@@ -13,6 +13,7 @@ class ProSDDStage1(nn.Module):
         prosody_dim=128,
         num_time_neg=50,
         num_spk_neg=50,
+        use_gender=False,
     ):
         super().__init__()
 
@@ -22,7 +23,8 @@ class ProSDDStage1(nn.Module):
 
         self.spk_dim = 192
         self.prosody_dim = int(prosody_dim)
-        self.out_dim = self.spk_dim + self.prosody_dim
+        self.gender_dim = 2 if use_gender else 0
+        self.out_dim = self.spk_dim + self.prosody_dim + self.gender_dim
 
         self.pros_ln = nn.LayerNorm(self.prosody_dim)
 
@@ -41,7 +43,7 @@ class ProSDDStage1(nn.Module):
         self.mask_embed = nn.Parameter(torch.zeros(self.hidden_dim))
         nn.init.normal_(self.mask_embed, mean=0.0, std=0.02)
 
-        # project SSL features to speaker + prosody targets
+        # 同一個 projection 預測 speaker、prosody 與可選的 gender。
         self.final_proj = nn.Linear(self.hidden_dim, self.out_dim)
 
 
@@ -70,8 +72,8 @@ class ProSDDStage1(nn.Module):
     # 50 time + 50 speaker
     def _contrastive_loss(self, pred, target, mask, spk_ids):
         """
-        pred:   (B, T, 192 + prosody_dim)
-        target: (B, T, 192 + prosody_dim) = [spk | prosody]
+        pred:   (B, T, 192 + prosody_dim + gender_dim)
+        target: (B, T, 192 + prosody_dim + gender_dim) = [spk | prosody | optional gender]
         mask:   (B, T) bool
         spk_ids: (B,)
         """
@@ -91,11 +93,16 @@ class ProSDDStage1(nn.Module):
         pos = F.normalize(target[b, t], dim=-1)   # (N, D)
 
         with torch.no_grad():
-            p_spk, p_pros = p[:, :self.spk_dim], p[:, self.spk_dim:]
-            pos_spk, pos_pros = pos[:, :self.spk_dim], pos[:, self.spk_dim:]
+            pros_end = self.spk_dim + self.prosody_dim
+            p_spk, p_pros = p[:, :self.spk_dim], p[:, self.spk_dim:pros_end]
+            pos_spk, pos_pros = pos[:, :self.spk_dim], pos[:, self.spk_dim:pros_end]
             spk_cos = F.cosine_similarity(p_spk, pos_spk, dim=-1).mean()
             pros_cos = F.cosine_similarity(p_pros, pos_pros, dim=-1).mean()
-            print(f"pos cosine | speaker: {spk_cos.item():.3f}, prosody: {pros_cos.item():.3f}",flush=True)
+            message = f"pos cosine | speaker: {spk_cos.item():.3f}, prosody: {pros_cos.item():.3f}"
+            if self.gender_dim:
+                gender_cos = F.cosine_similarity(p[:, pros_end:], pos[:, pros_end:], dim=-1).mean()
+                message += f", gender: {gender_cos.item():.3f}"
+            print(message, flush=True)
 
         # ====================================================
         # Negatives A: same utterance (same speaker), different time
@@ -178,13 +185,17 @@ class ProSDDStage1(nn.Module):
 
    
     ### Forward ###
-    def forward(self, wav, spk_emb, prosody_emb, spk_ids):
-        """
+    def forward(self, wav, spk_emb, prosody_emb, spk_ids, gender_emb=None):
+        """預測各遮罩 frame 的 concat embedding，回傳 scalar contrastive loss。
+
         wav:         (B, samples)
         spk_emb:     (B, 192)
         prosody_emb: (B, T', prosody_dim)
         spk_ids:     (B,)
+        gender_emb:  (B, 2)，use_gender=True 時須提供固定角度旋轉後的 target。
         """
+        if self.gender_dim and (gender_emb is None or gender_emb.shape != (wav.size(0), self.gender_dim)):
+            raise ValueError("use_gender=True requires gender_emb with shape [B, 2]")
         #feature encoder
         z = self.ssl.feature_extractor(wav)
         if isinstance(z, dict):
@@ -218,10 +229,13 @@ class ProSDDStage1(nn.Module):
         elif Tp > T:
             prosody_emb = prosody_emb[:, :T, :]
 
-        #build GT targets (B,T,out_dim) = [spk(192) | prosody(prosody_dim)]
+        #build GT targets (B,T,out_dim) = [spk | prosody | optional gender]
         spk = spk_emb.unsqueeze(1).expand(B, T, spk_emb.size(-1))
         prosody_emb = self.pros_ln(prosody_emb)
-        target = torch.cat([spk, prosody_emb], dim=-1)
+        targets = [spk, prosody_emb]
+        if self.gender_dim:
+            targets.append(gender_emb.unsqueeze(1).expand(B, T, self.gender_dim))
+        target = torch.cat(targets, dim=-1)
 
         #mask latent features
         mask = self._compute_span_mask(B, T, device=device)
@@ -238,7 +252,7 @@ class ProSDDStage1(nn.Module):
         ctx = outputs.last_hidden_state  # (B,T,1024)
 
         #project hidden_dim -> out_dim
-        pred = self.final_proj(ctx)      # (B,T,out_dim)
+        pred = self.final_proj(ctx)
 
         #contrastive loss
         return self._contrastive_loss(pred, target, mask, spk_ids)

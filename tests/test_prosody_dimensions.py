@@ -187,6 +187,7 @@ class ProsodyDimensionTests(unittest.TestCase):
                 torch.save(state, checkpoint)
                 args = SimpleNamespace(
                     list_path="unused", wav_dir="unused", batch_size=1, classifier_pool="mean",
+                    model_name="test",
                     model_path=str(checkpoint), save_scores_to=str(self.directory / "scores.txt"),
                 )
                 with patch("main_eval.resolve_device", return_value=torch.device("cpu")), \
@@ -206,6 +207,7 @@ class ProsodyDimensionTests(unittest.TestCase):
             metrics_path = self.directory / "metrics.json"
             args = SimpleNamespace(
                 list_path=str(protocol), wav_dir="unused", batch_size=2, classifier_pool="mean",
+                model_name="test",
                 model_path=str(checkpoint), save_scores_to=str(self.directory / "scores.txt"),
                 save_metrics_to=str(metrics_path),
             )

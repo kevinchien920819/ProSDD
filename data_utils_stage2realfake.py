@@ -2,13 +2,14 @@ import os
 import random
 import subprocess
 import tempfile
-from typing import Dict, Tuple, List, Optional
+from typing import Any, Dict, Tuple, List, Optional
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torchaudio
 from torch.utils.data import Dataset
+from data_utils_stage1real import load_gender
 from prosody_utils import load_prosody_dict
 from RawBoost import (
     ISD_additive_noise,
@@ -202,6 +203,8 @@ class ProSDDStage2Dataset(Dataset):
         aug_args=None,
         prosody_dim: Optional[int] = None,
         skip_bad_entries: bool = False,
+        gender_txt: Optional[str] = None,
+        gender_theta: float = 45.0,
     ):
         assert len(utt_ids) == len(spk_ids) == len(labels)
         self.utt_ids = utt_ids
@@ -221,6 +224,11 @@ class ProSDDStage2Dataset(Dataset):
         self.augment_algo = int(augment_algo)
         self.augment_prob = float(augment_prob)
         self.aug_args = aug_args
+        self.gender2emb = load_gender(gender_txt, gender_theta) if gender_txt is not None else None
+        if self.gender2emb is not None:
+            missing = sorted(set(self.spk_ids) - self.gender2emb.keys())
+            if missing:
+                raise ValueError(f"Missing gender labels for speakers: {', '.join(missing[:10])}")
 
     def __len__(self):
         return len(self.utt_ids)
@@ -248,7 +256,7 @@ class ProSDDStage2Dataset(Dataset):
             return out
         return aug_t[:L]
 
-    def __getitem__(self, idx: int):
+    def __getitem__(self, idx: int) -> Any:  # 子類別可回傳不同的 tuple 或錯誤紀錄 dict。
         utt_id = self.utt_ids[idx]
         spk_id_str = self.spk_ids[idx]
         label = int(self.labels[idx])
@@ -274,14 +282,15 @@ class ProSDDStage2Dataset(Dataset):
             return None
         wav = self._maybe_augment(wav)
 
-        return wav, spk_emb, pros_emb, spk_idx, label
+        gender_emb = self.gender2emb[spk_id_str] if self.gender2emb is not None else torch.empty(0)
+        return wav, spk_emb, pros_emb, spk_idx, label, gender_emb
 
 def collate_stage2(batch):
     batch = [b for b in batch if b is not None]
     if len(batch) == 0:
         return None 
     
-    wavs, spks, pross, spk_idxs, labels = zip(*batch)
+    wavs, spks, pross, spk_idxs, labels, genders = zip(*batch)
 
     wav = torch.stack(wavs, dim=0)                # (B,L)
     spk = torch.stack(spks, dim=0)                # (B,192)
@@ -295,4 +304,4 @@ def collate_stage2(batch):
     pros = torch.zeros(len(pross), Tmax, D, dtype=pross[0].dtype)
     for i, p in enumerate(pross):
         pros[i, : p.size(0), :] = p
-    return wav, spk, pros, spk_idx, labels
+    return wav, spk, pros, spk_idx, labels, torch.stack(genders)
