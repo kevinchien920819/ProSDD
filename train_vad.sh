@@ -5,6 +5,8 @@
 #   Step 2: Stage 2 real/fake training (ASVspoof2019 LA)
 # 已跑完的步驟可直接註解掉。
 set -euo pipefail
+# 忽略 torchaudio 2.8 的 TorchCodec 遷移警告（StreamReader／load 即將改版），不影響執行。
+export PYTHONWARNINGS="${PYTHONWARNINGS:+$PYTHONWARNINGS,}ignore::UserWarning:torchaudio._backend.utils,ignore::UserWarning:torchaudio._backend.ffmpeg"
 # if [[ $# -ne 1 || -z "$1" ]]; then
 #   echo "用法：bash $0 <checkpoint_dir>" >&2
 #   exit 1

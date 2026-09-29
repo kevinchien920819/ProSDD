@@ -9,6 +9,8 @@
 # Outputs are written to prosody_vad_txt/ and replace files with the same name.
 
 set -euo pipefail
+# 忽略 torchaudio 2.8 的 TorchCodec 遷移警告（StreamReader／load 即將改版），不影響執行。
+export PYTHONWARNINGS="${PYTHONWARNINGS:+$PYTHONWARNINGS,}ignore::UserWarning:torchaudio._backend.utils,ignore::UserWarning:torchaudio._backend.ffmpeg"
 
 usage() {
   cat <<'EOF'

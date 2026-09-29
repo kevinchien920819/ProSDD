@@ -4,6 +4,8 @@
 #   Step 1: Stage 1 contrastive pre-training on bonafide speech (LibriSpeech)
 # 已跑完的步驟可直接註解掉。
 set -euo pipefail
+# 忽略 torchaudio 2.8 的 TorchCodec 遷移警告（StreamReader／load 即將改版），不影響執行。
+export PYTHONWARNINGS="${PYTHONWARNINGS:+$PYTHONWARNINGS,}ignore::UserWarning:torchaudio._backend.utils,ignore::UserWarning:torchaudio._backend.ffmpeg"
 cd "$(dirname "$0")"
 mkdir -p prosody_txt output/logs_stage1contrastived output/logs_stage2realfake_batch_8_sec_4_2019LA
 

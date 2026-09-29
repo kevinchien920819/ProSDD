@@ -9,6 +9,8 @@ exit 1
 #   Step 2: Stage 2 real/fake training with Rhythm duration fusion (ASVspoof2019 LA)
 # 已跑完的步驟可直接註解掉；預設僅啟用 Step 2。
 set -euo pipefail
+# 忽略 torchaudio 2.8 的 TorchCodec 遷移警告（StreamReader／load 即將改版），不影響執行。
+export PYTHONWARNINGS="${PYTHONWARNINGS:+$PYTHONWARNINGS,}ignore::UserWarning:torchaudio._backend.utils,ignore::UserWarning:torchaudio._backend.ffmpeg"
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 # Step 0 使用的 VAD MPM teacher checkpoint；可直接修改為自己的目錄。
 checkpoint_dir="${VAD_TEACHER_CHECKPOINT:-prosody_checkpoint}"
