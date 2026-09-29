@@ -27,8 +27,7 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from model_stage2realfake import ProSDDStage2
-from prosody_utils import infer_checkpoint_prosody_dim
+from model_stage2realfake import ProSDDStage2, prepare_stage1_state
 
 
 class _PositionalEncoding(nn.Module):
@@ -190,6 +189,7 @@ class ProSDDStage2Rhythm(ProSDDStage2):
         T_target: Optional[int] = None,
         prosody_dim: int = 128,
         *,
+        use_gender: bool = False,
         rhythm_sources: Sequence[str] = ("syllable", "vowel", "consonant"),
         nhead: int = 4,
         n_rhythm_encoder_layers: int = 2,
@@ -214,6 +214,7 @@ class ProSDDStage2Rhythm(ProSDDStage2):
             model_name=model_name, mask_prob=mask_prob, mask_span_len=mask_span_len,
             tau=tau, num_classes=num_classes, num_time_neg=num_time_neg,
             num_spk_neg=num_spk_neg, T_target=T_target or 200, prosody_dim=prosody_dim,
+            use_gender=use_gender,
         )
         self.T_target = T_target
         self.classifier_pool = "rhythm"
@@ -229,15 +230,11 @@ class ProSDDStage2Rhythm(ProSDDStage2):
 
     def load_stage1(self, ckpt_path: str):
         """Restore the backbone, mask, projection AND learned target LayerNorm."""
-        state = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-        state = state.get("state_dict", state)
-        state = {k.removeprefix("module."): v for k, v in state.items()}
-        checkpoint_dim = infer_checkpoint_prosody_dim(state, self.spk_dim)
-        if checkpoint_dim != self.prosody_dim:
-            raise ValueError(
-                f"Prosody dim mismatch: Stage-1 checkpoint has {checkpoint_dim}, "
-                f"Stage-2 expects {self.prosody_dim}"
-            )
+        state = prepare_stage1_state(
+            torch.load(ckpt_path, map_location="cpu", weights_only=True),
+            self.prosody_dim, self.spk_dim,
+            use_gender=bool(self.gender_dim),
+        )
         for name in ("ssl", "final_proj", "pros_ln"):
             prefix = name + "."
             weights = {k[len(prefix):]: v for k, v in state.items() if k.startswith(prefix)}
@@ -341,13 +338,14 @@ class ProSDDStage2Rhythm(ProSDDStage2):
         loss = F.cross_entropy(logits, torch.zeros_like(b))
         with torch.no_grad():
             spk_cos = F.cosine_similarity(p[:, :self.spk_dim], pos[:, :self.spk_dim]).mean()
-            pros_cos = F.cosine_similarity(p[:, self.spk_dim:], pos[:, self.spk_dim:]).mean()
+            pros_end = self.spk_dim + self.prosody_dim
+            pros_cos = F.cosine_similarity(p[:, self.spk_dim:pros_end], pos[:, self.spk_dim:pros_end]).mean()
         return loss, spk_cos, pros_cos
 
     def forward(
         self, wav, spk_emb=None, prosody_emb=None, spk_ids=None,
         duration_features=None, *, frame_padding_mask=None,
-        rhythm_padding_mask=None, compute_ssl: bool = True,
+        rhythm_padding_mask=None, compute_ssl: bool = True, gender_emb=None,
     ):
         """由音訊與 rhythm 計算分類 logits，以及可選的 masked SSL loss。
 
@@ -356,6 +354,7 @@ class ProSDDStage2Rhythm(ProSDDStage2):
         表示人工 padding。SSL encoder 使用反向的有效 frame mask，不接收 length。
         compute_ssl=True 時還需 spk_emb [B, 192]、prosody_emb [B, T, D]
         與 spk_ids [B]，各資料須對應同一音訊區間。
+        use_gender=True 且 compute_ssl=True 時，另需 gender_emb [B,2]。
 
         回傳 logits [B, num_classes]、feature [B, hidden_dim]、ssl_loss、
         spk_cos 與 pros_cos；略過 SSL 時，後三項為 None。
@@ -380,10 +379,7 @@ class ProSDDStage2Rhythm(ProSDDStage2):
             speaker = spk_emb.to(z)
             if not torch.isfinite(prosody).all() or not torch.isfinite(speaker).all():
                 raise ValueError("Valid SSL targets must be finite")
-            target = torch.cat([
-                speaker.unsqueeze(1).expand(-1, z.size(1), -1),
-                self.pros_ln(prosody),
-            ], dim=-1)
+            target = self._embedding_target(speaker, prosody, gender_emb)
 
             # Pass 1: the masked branch keeps Stage I's embedding supervision.
             mask = self._valid_span_mask(valid)

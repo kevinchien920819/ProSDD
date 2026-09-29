@@ -339,9 +339,10 @@ class ProSDDStage2RhythmDataset(_Stage2Dataset):
             prosody_layer: teacher 輸出的層數。
             conv_kernel, conv_stride: 與學生模型一致的 CNN 幾何。
             report_bad_samples: 失敗時回傳 ID／原因，供訓練主程序集中記錄。
+            gender_txt, gender_theta: 可選語者 gender 標註檔與旋轉角度（度）。
         output:
             ProSDDStage2RhythmDataset: 可供 DataLoader 讀取的資料集。單筆資料沿用
-                Stage 2 tuple 前五項，後接 duration_features、valid_samples 與 utt_id。
+                Stage 2 tuple 前五項，後接 duration_features、valid_samples、utt_id 與 gender。
     """
 
     def __init__(
@@ -370,6 +371,8 @@ class ProSDDStage2RhythmDataset(_Stage2Dataset):
         conv_kernel: Sequence[int] = CONV_KERNEL,
         conv_stride: Sequence[int] = CONV_STRIDE,
         report_bad_samples: bool = False,
+        gender_txt: str | Path | None = None,
+        gender_theta: float = 45.0,
     ) -> None:
         self.rhythm_sources = tuple(rhythm_sources)
         self.T_target = T_target
@@ -379,7 +382,7 @@ class ProSDDStage2RhythmDataset(_Stage2Dataset):
         self.prosody_layer = prosody_layer
         self.conv_kernel = tuple(conv_kernel)
         self.conv_stride = tuple(conv_stride)
-        teacher_dim = self.prosody_model.args.filter_size
+        teacher_dim = int(getattr(self.prosody_model, "args").filter_size)
         if prosody_dim is not None and prosody_dim != teacher_dim:
             raise ValueError(f"Prosody dim mismatch: teacher has {teacher_dim}, expected {prosody_dim}")
         self.utt2duration, self.skipped_samples = load_duration_csv(
@@ -400,9 +403,9 @@ class ProSDDStage2RhythmDataset(_Stage2Dataset):
             utt_ids=[utt_ids[i] for i in keep],
             spk_ids=[spk_ids[i] for i in keep],
             labels=[labels[i] for i in keep],
-            wav_dir=wav_dir,
+            wav_dir=str(wav_dir),
             sr=sr,
-            spkmean_txt=spkmean_txt,
+            spkmean_txt=str(spkmean_txt),
             prosody_txt=None,
             max_len=samples,
             audio_ext=audio_ext,
@@ -412,10 +415,12 @@ class ProSDDStage2RhythmDataset(_Stage2Dataset):
             aug_args=aug_args,
             prosody_dim=teacher_dim,
             skip_bad_entries=skip_bad_entries,
+            gender_txt=None if gender_txt is None else str(gender_txt),
+            gender_theta=gender_theta,
         )
 
     def __getitem__(self, idx: int) -> tuple[
-        torch.Tensor, torch.Tensor, torch.Tensor, int, int, torch.Tensor, tuple[int, int], str
+        torch.Tensor, torch.Tensor, torch.Tensor, int, int, torch.Tensor, tuple[int, int], str, torch.Tensor
     ] | dict[str, str] | None:
         """description:
             依索引讀取停頓邊界間的音訊與 rhythm 特徵。
@@ -425,7 +430,7 @@ class ProSDDStage2RhythmDataset(_Stage2Dataset):
                 idx: 資料集中的樣本索引。
             output:
                 tuple | None: 成功時回傳 wav、speaker embedding、prosody embedding、
-                    speaker 索引、標籤、duration 特徵、有效音訊範圍與 utterance ID；
+                    speaker 索引、標籤、duration 特徵、有效音訊範圍、utterance ID 與 gender；
                     略過失敗樣本時回傳 None；report_bad_samples=True 則回傳 ID／原因。
         """
         utt_id = self.utt_ids[idx]
@@ -460,7 +465,8 @@ class ProSDDStage2RhythmDataset(_Stage2Dataset):
             return None
         valid_samples = (left, right)
 
-        return wav, spk_emb, pros_emb, spk_idx, label, duration_features, valid_samples, utt_id
+        gender = self.gender2emb[spk_id_str] if self.gender2emb is not None else torch.empty(0)
+        return wav, spk_emb, pros_emb, spk_idx, label, duration_features, valid_samples, utt_id, gender
 
 
 def collate_stage2_rhythm(batch, *, T_target=None, conv_kernel=CONV_KERNEL,
@@ -486,7 +492,7 @@ def collate_stage2_rhythm(batch, *, T_target=None, conv_kernel=CONV_KERNEL,
     batch = [item for item in batch if item is not None and not isinstance(item, dict)]
     if not batch:
         return {"skipped_samples": skipped}
-    wavs, spks, pross, spk_idxs, labels, rhythms, valid_samples, utt_ids = zip(*batch)
+    wavs, spks, pross, spk_idxs, labels, rhythms, valid_samples, utt_ids, genders = zip(*batch)
 
     stride, receptive_field = cnn_geometry(conv_kernel, conv_stride)
     for audio, target, utt_id in zip(wavs, pross, utt_ids):
@@ -495,7 +501,7 @@ def collate_stage2_rhythm(batch, *, T_target=None, conv_kernel=CONV_KERNEL,
     inputs = collate_rhythm_inputs(
         wavs, rhythms, valid_samples, T_target=T_target, conv_kernel=conv_kernel, conv_stride=conv_stride,
     )
-    pros = pad_sequence(pross, batch_first=True)
+    pros = pad_sequence(list(pross), batch_first=True)
     frame_mask = inputs["frame_padding_mask"]
     frames = frame_mask.size(1)
     pros = torch.nn.functional.pad(pros, (0, 0, 0, frames - pros.size(1)))
@@ -505,6 +511,7 @@ def collate_stage2_rhythm(batch, *, T_target=None, conv_kernel=CONV_KERNEL,
         "spk_emb": torch.stack(spks), "prosody_emb": pros,
         "spk_ids": torch.tensor(spk_idxs, dtype=torch.long),
         "labels": torch.tensor(labels, dtype=torch.long),
+        "gender_emb": torch.stack(genders),
         "skipped_samples": skipped,
     }
 

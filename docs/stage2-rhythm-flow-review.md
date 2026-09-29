@@ -13,7 +13,7 @@ Stage 1 權重、建立 train/dev 資料流程、逐輪最佳化聯合 loss、�
 | 5. Epoch 與凍結 | `train_epoch`／`validate` 分開；`epoch < freeze_epochs` 時凍結分類器，只最佳化 SSL | 共用 `run_epoch`；train 更新權重，dev 關閉梯度；從第一輪使用分類＋SSL loss，沒有凍結期 |
 | 6. SSL loss 權重 | 前四輪 0.2、之後 0.05；目前實際忽略 `--beta` | 相同預設排程，並允許 `--beta` 固定覆寫；同輪 train/dev 使用相同 beta |
 | 7. 指標與異常 | train 有 loss/cosine；dev 另算 accuracy、各類別及 balanced accuracy | train 也有 accuracy；dev 增加 EER；本機另存 batch 數，並記錄處理／略過樣本數；拒絕非有限 loss、空 epoch 或缺少某一類的 dev |
-| 8. 紀錄與 checkpoint | W&B 與逐輪模型權重 | 沿用 W&B 的 loss/cos/acc 命名，另存設定、JSONL 指標、排除 ID／原因、逐輪權重及最低 dev EER 的 `model_best.pth` |
+| 8. 紀錄與 checkpoint | W&B 與最低 val loss 的 `model_best.pth` | 沿用 W&B 的 loss/cos/acc 命名，另存設定、JSONL 指標、排除 ID／原因；模型只保存最低 dev EER 的 `model_best.pth` |
 
 ## 會影響實驗比較的設定
 

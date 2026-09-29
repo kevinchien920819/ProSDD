@@ -6,6 +6,7 @@ import json
 import math
 from pathlib import Path
 import random
+from typing import Any
 
 import soundfile as sf
 import torch
@@ -16,16 +17,21 @@ from data_utils_rhythm import collate_rhythm_inputs, load_duration_csv, load_rhy
 from evaluation_metric.prosdd import evaluate_score_file, load_protocol_labels, print_metrics
 from full_utterance import cnn_geometry, LengthBatchSampler
 from model_stage2realfake_rhythm import ProSDDStage2Rhythm
-from prosody_utils import infer_checkpoint_prosody_dim
+from model_stage2realfake_rhythm2 import ProSDDStage2Rhythm2
+from model_stage2realfake import infer_checkpoint_dims
 from utils import resolve_device, set_random_seed
+
+# 訓練 config.json 的 model_class 對應可還原的 Rhythm 模型類別。
+MODEL_CLASSES = {cls.__name__: cls for cls in (ProSDDStage2Rhythm, ProSDDStage2Rhythm2)}
 
 
 def load_model(model_path, config_path=None):
     """依 checkpoint 與訓練 JSON 還原完整 Rhythm 模型，回傳 (eval 模型, 設定)。"""
     config_path = Path(config_path) if config_path else Path(model_path).with_name("config.json")
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    if config.get("model_class") != "ProSDDStage2Rhythm":
-        raise ValueError("Expected a ProSDDStage2Rhythm training config")
+    model_cls = MODEL_CLASSES.get(config.get("model_class"))
+    if model_cls is None:
+        raise ValueError(f"Unsupported model_class in training config: {config.get('model_class')}")
     if config.get("sample_rate") != 16000:
         raise ValueError("Rhythm checkpoints must use a 16000 Hz sample rate")
     mode = config.get("audio_mode")
@@ -41,13 +47,14 @@ def load_model(model_path, config_path=None):
         raise ValueError("Unsupported checkpoint audio policy")
     state = torch.load(model_path, map_location="cpu", weights_only=True)
     state = {key.removeprefix("module."): value for key, value in state.get("state_dict", state).items()}
-    if infer_checkpoint_prosody_dim(state) != config["prosody_dim"]:
+    prosody_dim, gender_dim = infer_checkpoint_dims(state)
+    if prosody_dim != config["prosody_dim"]:
         raise ValueError("Checkpoint and training config disagree on prosody_dim")
     options = (
         "model_name", "prosody_dim", "T_target", "rhythm_sources", "nhead",
         "n_rhythm_encoder_layers", "n_cls_encoder_layers", "dropout", "max_position_embeddings",
     )
-    model = ProSDDStage2Rhythm(**{key: config[key] for key in options})
+    model = model_cls(**{key: config[key] for key in options}, use_gender=bool(gender_dim))
     # A partial load could silently leave an untrained classifier in place.
     model.load_state_dict(state, strict=True)
     model.eval()
@@ -192,11 +199,11 @@ def main(argv=None):
     )
     device = resolve_device()
     model.to(device)
-    batching = dict(batch_size=args.batch_size)
+    batching: dict[str, Any] = dict(batch_size=args.batch_size)
     if args.max_batch_samples and len(dataset):
         batching = dict(batch_sampler=LengthBatchSampler(dataset.sample_bounds(), args.batch_size,
                                                        args.max_batch_samples))
-    workers = dict(multiprocessing_context="spawn") if args.num_workers else {}
+    workers: dict[str, Any] = dict(multiprocessing_context="spawn") if args.num_workers else {}
     loader = DataLoader(
         dataset, **batching, **workers, num_workers=args.num_workers, pin_memory=device.type == "cuda",
         collate_fn=partial(collate_rhythm_eval, T_target=config["T_target"], **geometry),

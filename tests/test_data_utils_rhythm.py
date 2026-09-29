@@ -252,7 +252,7 @@ class RhythmDatasetTests(unittest.TestCase):
             audio_ext=".wav", max_len=0,
         )
 
-        torch.testing.assert_close(dataset[0][:5], original[0])
+        torch.testing.assert_close(dataset[0][:5], original[0][:5])
 
     def cropped_dataset(self, **kwargs):
         self.rows[0].update({
@@ -482,10 +482,10 @@ class RhythmDatasetTests(unittest.TestCase):
     def batch_samples(self):
         dataset = self.dataset()
         first = dataset[0]
-        wav, spk_emb, pros_emb, spk_idx, label, duration_features, _, _ = first
+        wav, spk_emb, pros_emb, spk_idx, label, duration_features, _, _, gender = first
         second = (
             wav[:16000], spk_emb, pros_emb[:49], spk_idx, label,
-            duration_features[:1], (0, 16000), "short",
+            duration_features[:1], (0, 16000), "short", gender,
         )
         return [first, second]
 

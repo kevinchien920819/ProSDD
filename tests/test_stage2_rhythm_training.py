@@ -152,10 +152,10 @@ class RhythmEntrypointTests(unittest.TestCase):
         }
         return [part for key, value in pairs.items() for part in (f"--{key}", str(value))] + list(extra)
 
-    def test_main_trains_from_stage1_and_saves_reloadable_epoch_weights(self):
+    def test_main_trains_from_stage1_and_saves_reloadable_best_weights(self):
         entrypoint.main(self.argv())
 
-        state = torch.load(self.log_dir / "model_epoch_1.pth", weights_only=True)
+        state = torch.load(self.log_dir / "model_best.pth", weights_only=True)
         model = ProSDDStage2Rhythm(
             model_name="test", prosody_dim=128, T_target=None, rhythm_sources=["syllable"],
             nhead=2, n_rhythm_encoder_layers=1, n_cls_encoder_layers=1,
@@ -178,10 +178,9 @@ class RhythmEntrypointTests(unittest.TestCase):
         config = json.loads((self.log_dir / "config.json").read_text())
         self.assertEqual((config["model_class"], config["prosody_dim"], config["conv_kernel"]),
                          ("ProSDDStage2Rhythm", 128, [400]))
-        best_epoch = min(records, key=lambda r: r["val/eer"])["epoch"]
         best = torch.load(self.log_dir / "model_best.pth", weights_only=True)
-        expected = torch.load(self.log_dir / f"model_epoch_{best_epoch}.pth", weights_only=True)
-        torch.testing.assert_close(best, expected)
+        self.assertTrue(best)
+        self.assertFalse(list(self.log_dir.glob("model_epoch_*.pth")))
         logs = init.return_value.__enter__.return_value.log.call_args_list
         self.assertEqual([call.kwargs["step"] for call in logs], [1, 2])
         self.assertEqual(logs[-1].args[0]["eer/val"], records[-1]["val/eer"])

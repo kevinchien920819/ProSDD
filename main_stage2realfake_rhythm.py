@@ -232,6 +232,9 @@ def build_parser():
     parser.add_argument("--teacher_checkpoint", help="MPM model ID/directory, or the required VAD checkpoint directory")
     parser.add_argument("--prosody_layer", type=int, default=7, help="Teacher layer; must match Stage 1 targets")
     parser.add_argument("--stage1_ckpt", type=str, required=True)
+    parser.add_argument("--use_gender", action="store_true", help="將 gender 兩維加入同一個 embedding 監督")
+    parser.add_argument("--gender_txt", help="涵蓋 train／dev 語者的標註檔：speaker_id | M/F")
+    parser.add_argument("--gender_theta", type=float, default=45.0, help="gender 旋轉角度（度），須與 Stage 1 相同")
     parser.add_argument("--skip_missing_duration", action="store_true",
                         help="Compatibility flag: invalid durations are always excluded and saved in duration_filter.json")
     parser.add_argument("--skip_bad_samples", action="store_true",
@@ -313,14 +316,18 @@ def build_parser():
     return parser
 
 
-def main(argv=None):
+def main(argv=None, *, model_cls=ProSDDStage2Rhythm):
     """以 CLI 參數 argv 執行 train/dev 聯合 loss；None 表示讀取命令列。
 
-    log_dir 保存模型設定、逐輪權重與指標、最低 EER 權重及排除樣本紀錄。
+    model_cls 為接受相同建構參數與 batch kwargs 的 Rhythm 模型類別，
+    名稱會記入 config.json 的 model_class。
+    log_dir 保存模型設定、逐輪指標、最低 dev EER 權重及排除樣本紀錄。
     W&B 使用相同指標；函式不回傳模型，失敗時保留已完成的 epoch 產物。
     """
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.use_gender and not args.gender_txt:
+        parser.error("--gender_txt is required when --use_gender is enabled")
     for name, minimum in (("epochs", 1), ("batch_size", 1), ("num_workers", 0), ("max_batch_samples", 0)):
         if getattr(args, name) < minimum:
             parser.error(f"--{name} must be >= {minimum}")
@@ -351,7 +358,7 @@ def main(argv=None):
         teacher.share_memory()
     if args.prosody_dim is None:
         args.prosody_dim = teacher.args.filter_size
-    model = ProSDDStage2Rhythm(
+    model = model_cls(
         model_name=args.model_name, stage1_ckpt=args.stage1_ckpt, prosody_dim=args.prosody_dim,
         mask_prob=args.mask_prob, mask_span_len=args.mask_span_len, tau=args.tau,
         num_time_neg=args.num_time_neg, num_spk_neg=args.num_spk_neg, T_target=args.T_target,
@@ -359,6 +366,7 @@ def main(argv=None):
         n_rhythm_encoder_layers=args.n_rhythm_encoder_layers,
         n_cls_encoder_layers=args.n_cls_encoder_layers, dropout=args.dropout,
         max_position_embeddings=args.max_position_embeddings,
+        use_gender=args.use_gender,
     ).to(device)
     geometry = dict(conv_kernel=model.ssl.config.conv_kernel, conv_stride=model.ssl.config.conv_stride)
     datasets, loaders = {}, {}
@@ -372,6 +380,7 @@ def main(argv=None):
             prosody_layer=args.prosody_layer, rhythm_sources=args.rhythm_sources, T_target=args.T_target,
             skip_bad_samples=args.skip_bad_samples, skip_missing_duration=args.skip_missing_duration,
             report_bad_samples=True, skip_bad_entries=args.skip_bad_samples,
+            gender_txt=args.gender_txt if args.use_gender else None, gender_theta=args.gender_theta,
             augment_fn=process_Rawboost_feature if training and args.algo else None,
             augment_algo=args.algo if training else 0,
             augment_prob=args.augment_prob if training else 0.0, aug_args=args, **geometry,
@@ -384,7 +393,7 @@ def main(argv=None):
     print(f"Device: {device} | Teacher: {args.teacher_kind}, dim={args.prosody_dim} | "
           f"Train/dev samples: {len(datasets['train'])}/{len(datasets['dev'])}", flush=True)
     config = {
-        **vars(args), **geometry, "model_class": "ProSDDStage2Rhythm", "sample_rate": SAMPLING_RATE,
+        **vars(args), **geometry, "model_class": model_cls.__name__, "sample_rate": SAMPLING_RATE,
         "audio_mode": "full_utterance" if args.audio_seconds == 0 else "pause_crop",
         "target_samples": round(args.audio_seconds * SAMPLING_RATE) if args.audio_seconds else None,
         "prosody_alignment": "cnn_receptive_field_centers",
@@ -414,7 +423,6 @@ def main(argv=None):
             val = run_epoch(loaders["dev"], model, device, criterion, alpha=args.alpha, beta=beta,
                             description=f"Dev {epoch}",
                             on_skip=partial(write_skipped_samples, skipped_file, split="dev", epoch=epoch))
-            torch.save(model.state_dict(), log_dir / f"model_epoch_{epoch}.pth")
             if val["eer"] < best_eer:
                 best_eer = val["eer"]
                 torch.save(model.state_dict(), log_dir / "model_best.pth")

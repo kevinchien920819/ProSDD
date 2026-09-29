@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# ASVspoof2019 LA 的 ProSDD Stage 2 Rhythm 訓練與評估入口，使用 VAD teacher。
+# ASVspoof2019 LA 的 ProSDD Stage 2 Rhythm2 訓練與評估入口，使用 VAD teacher。
+# Rhythm2 = ProSDDStage2 backbone + rhythm-transformer 融合層（model_stage2realfake_rhythm2.py）；
+# 參數與 train_rhythm.sh 相同，只換訓練入口與輸出目錄，方便對照實驗。
 set -euo pipefail
 # 忽略 torchaudio 2.8 的 TorchCodec 遷移警告（StreamReader／load 即將改版），不影響執行。
 export PYTHONWARNINGS="${PYTHONWARNINGS:+$PYTHONWARNINGS,}ignore::UserWarning:torchaudio._backend.utils,ignore::UserWarning:torchaudio._backend.ffmpeg"
@@ -7,10 +9,10 @@ export PYTHONWARNINGS="${PYTHONWARNINGS:+$PYTHONWARNINGS,}ignore::UserWarning:to
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
 # 預設 teacher 對應既有 VAD Stage 1 的 128 維、layer 7 targets。
-log_dir="${RHYTHM_LOG_DIR:-output/logs_stage2realfake_rhythm_syllable_batch_8_sec_all_2019LA}"
+log_dir="${RHYTHM2_LOG_DIR:-output/logs_stage2realfake_rhythm2_syllable_batch_8_sec_all_2019LA}"
 mkdir -p "$log_dir"
 
-uv run --locked python main_stage2realfake_rhythm.py \
+uv run --locked python main_stage2realfake_rhythm2.py \
   --train_list dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.train.trn.txt \
   --dev_list dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.dev.trl.txt \
   --wav_dir_train dataset/ASVspoof2019/ASVspoof2019_LA_train/flac \
@@ -30,11 +32,11 @@ uv run --locked python main_stage2realfake_rhythm.py \
   --n_rhythm_encoder_layers 2 --n_cls_encoder_layers 4 \
   --algo 3 --augment_prob 0.5 --skip_bad_samples \
   --wandb_mode online \
-  --wandb_tags prosdd vad stage2 asvspoof2019 batch_8 second_4 rhythm syllable \
-  --wandb_name "stage2-asvspoof2019" \
+  --wandb_tags prosdd vad stage2 asvspoof2019 batch_8 second_4 rhythm2 syllable \
+  --wandb_name "stage2-asvspoof2019-rhythm2" \
   --log_dir "$log_dir"
 
-# 訓練成功後，以最低 dev EER 的 checkpoint 評估 eval split。
+# 訓練成功後，以最低 dev EER 的 checkpoint 評估 eval split；config.json 的 model_class 會還原 Rhythm2。
 eval_dir="$log_dir/eval"
 uv run --locked python main__eval_rhythm.py \
   --list_path dataset/ASVspoof2019/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.eval.trl.txt \

@@ -51,8 +51,9 @@ class TrainRhythmScriptTests(unittest.TestCase):
         self.assertEqual([call[:4] for call in calls], [
             ["run", "--locked", "python", "main_stage2realfake_rhythm.py"],
             ["run", "--locked", "python", "main__eval_rhythm.py"],
+            ["run", "--locked", "python", "main__eval_rhythm.py"],
         ])
-        train, evaluation = calls
+        train, evaluation, evaluation5 = calls
         self.assertEqual(train[train.index("--log_dir") + 1], str(self.log_dir))
         expected = {
             "--model_path": str(self.log_dir / "model_best.pth"),
@@ -65,6 +66,17 @@ class TrainRhythmScriptTests(unittest.TestCase):
         }
         actual = {flag: evaluation[evaluation.index(flag) + 1] for flag in expected}
         self.assertEqual(actual, expected)
+        expected5 = {
+            "--model_path": str(self.log_dir / "model_best.pth"),
+            "--config_path": str(self.log_dir / "config.json"),
+            "--list_path": "dataset/ASVspoof5/ASVspoof5.eval.track_1.tsv",
+            "--wav_dir": "dataset/ASVspoof5/flac_E_eval",
+            "--duration_csv": "dataset/ASVspoof5/ASVspoof5_cache_csv/cache_ASVspoof5_eval.csv",
+            "--save_scores_to": str(self.log_dir / "eval/asvspoof5_eval.txt"),
+            "--save_metrics_to": str(self.log_dir / "eval/asvspoof5_eval.metrics.json"),
+        }
+        actual5 = {flag: evaluation5[evaluation5.index(flag) + 1] for flag in expected5}
+        self.assertEqual(actual5, expected5)
 
     def test_failed_training_does_not_launch_evaluation(self):
         result, calls = self.run_script(RHYTHM_TRAIN_EXIT="17")

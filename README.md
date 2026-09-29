@@ -259,15 +259,27 @@ uv run --locked python main_stage2realfake_rhythm.py \
 - W&B 可改成 `--wandb_mode offline`／`online`；省略時遵循 `WANDB_MODE`，未設定則為 online。
 
 `log_dir` 保存 `config.json`、`metrics.jsonl`、`duration_filter.json`、
-`skipped_samples.jsonl`、每輪 `model_epoch_<epoch>.pth`，以及最低 dev EER 的
+`skipped_samples.jsonl`，以及最低 dev EER 的
 `model_best.pth`（相同 EER 保留較早的一輪）。Checkpoint 格式為模型 `state_dict`，
-不含 optimizer 續訓狀態。EER 在 JSON／W&B 中以 0–1 儲存。
+不含 optimizer 續訓狀態，也不再儲存每輪 `model_epoch_<epoch>.pth`。EER 在 JSON／W&B 中以 0–1 儲存。
 初始化排除記為 epoch 0；各輪略過筆數只計當輪讀取失敗的樣本。
 Dev 成功讀取的資料必須同時包含 bonafide 與 spoof，才能計算 EER。
 
 獨立評估入口為 `main__eval_rhythm.py`；`train_rhythm.sh` 會依序執行 Stage 2 訓練與
 eval 評估，`train_rhythm_vad.sh` 仍暫停使用。每輪訓練已包含 dev 驗證。
 訓練失敗時腳本立即結束，不執行 eval；評估失敗也會回傳非零狀態。
+
+**Rhythm2（重用 rhythm-transformer 模組）**：[`model_stage2realfake_rhythm2.py`](model_stage2realfake_rhythm2.py)
+以 `ProSDDStage2` 為 backbone（CNN、共用 encoder、span mask、contrastive loss、`cls_head`
+與 Stage 1 載入全部沿用），rhythm 分支與融合 decoder 照 rhythm-transformer 的
+`RhythmTransformerWithDuration` 組裝，`RhythmEmbedding`／`PositionalEncoding` 來自僅清理空白的
+[`rhythm_transformer_embedding.py`](rhythm_transformer_embedding.py)；融合層寬度為 backbone 的 1024 維。
+`frame_padding_mask` 同時作為 encoder attention mask 與 decoder memory mask，SSL 的 negative 取樣
+則與 baseline 相同、不排除 padding。訓練入口 [`main_stage2realfake_rhythm2.py`](main_stage2realfake_rhythm2.py)
+接受與 `main_stage2realfake_rhythm.py` 完全相同的參數（`config.json` 的 `model_class` 記為
+`ProSDDStage2Rhythm2`），`main__eval_rhythm.py` 依該欄位自動還原對應模型；
+`bash train_rhythm2.sh` 以與 `train_rhythm.sh` 相同的 ASVspoof2019 LA 設定訓練並評估，
+輸出目錄可用 `RHYTHM2_LOG_DIR` 指定。
 
 與 baseline 訓練入口的八類流程差異及小型驗證結果，見
 [Stage 2 Rhythm 流程檢驗](docs/stage2-rhythm-flow-review.md)。
@@ -339,11 +351,13 @@ export WANDB_NAME='stage1-experiment'
 `--log_dir` 的 checkpoint 儲存規則如下：
 
 - Stage 1：只在最後一個 epoch 完成後儲存 `model_last.pth`。
-- Stage 2（一般版與 Rhythm 版）：只保存最低 val loss 的 `model_best.pth`；
+- Stage 2（一般版）：只保存最低 val loss 的 `model_best.pth`；
   只有 loss 嚴格下降時才覆寫，平手或退步時不存檔。
+- Stage 2（Rhythm 版）：只保存最低 dev EER 的 `model_best.pth`；
+  只有 EER 嚴格下降時才覆寫，平手或退步時不存檔。
 
 兩個階段都不再產生逐 epoch checkpoint。
-Stage 2 的 val loss 是當前 epoch 的 `alpha * cls_loss + beta * ssl_loss`，
+一般 Stage 2 選模使用的 val loss 是當前 epoch 的 `alpha * cls_loss + beta * ssl_loss`，
 其中 `beta` 仍沿用既有排程。已存在的舊 checkpoint 不會自動刪除。
 此目錄也作為 W&B 本機紀錄的根目錄（其下的 `wandb/`）。模型 checkpoint 不會自動上傳。
 run 會在訓練正常結束或拋出例外時關閉。
